@@ -37,7 +37,7 @@ describe('deploy Docker blue-green', () => {
     expect(prismaSchema).toContain('importFileExtension    = "js"');
   });
 
-  it('@spec:AC-213 os slots publicam 127.0.0.1:3000/3001 e não há proxy interno', () => {
+  it('@spec:AC-213 os slots publicam 127.0.0.1:3000/3002 e não há proxy interno', () => {
     const apiDefaults = compose.match(
       /x-api: &api\n([\s\S]*?)\nservices:/,
     )?.[1];
@@ -54,10 +54,10 @@ describe('deploy Docker blue-green', () => {
     expect(apiBlue).toContain('<<: *api');
     expect(apiBlue).toContain('127.0.0.1:3000:3000');
     expect(apiGreen).toContain('<<: *api');
-    expect(apiGreen).toContain('127.0.0.1:3001:3000');
+    expect(apiGreen).toContain('127.0.0.1:3002:3000');
     expect(publishedPorts).toEqual([
       '127.0.0.1:3000:3000',
-      '127.0.0.1:3001:3000',
+      '127.0.0.1:3002:3000',
     ]);
     expect(compose).not.toContain('image: nginx');
     expect(compose).not.toContain('  proxy:');

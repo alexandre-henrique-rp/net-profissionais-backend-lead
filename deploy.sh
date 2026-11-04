@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Atualização blue-green da API sem proxy interno.
 #
-# Cada slot publica uma porta no host (blue=3000, green=3001, apenas 127.0.0.1).
+# Cada slot publica uma porta no host (blue=3000, green=3002, apenas 127.0.0.1).
 # A troca de tráfego reescreve .deploy/upstream.conf — arquivo que o Nginx
 # DO SERVIDOR inclui (ver deploy/nginx-site.example.conf). O reload do Nginx
 # é MANUAL: o script pergunta se você já recarregou antes de parar o slot
@@ -50,7 +50,7 @@ require_tools() {
 slot_port() {
 	case "$1" in
 		blue) echo 3000 ;;
-		green) echo 3001 ;;
+		green) echo 3002 ;;
 		*) return 1 ;;
 	esac
 }
@@ -59,7 +59,7 @@ current_slot() {
 	if [[ -f "$UPSTREAM_FILE" ]]; then
 		case "$(sed -nE 's/^[[:space:]]*server 127\.0\.0\.1:([0-9]+);.*/\1/p' "$UPSTREAM_FILE" | head -n 1)" in
 			3000) echo blue ;;
-			3001) echo green ;;
+			3002) echo green ;;
 		esac
 	fi
 }
