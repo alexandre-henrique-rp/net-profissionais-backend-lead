@@ -77,6 +77,11 @@ export class EnvironmentVariables {
   @IsString()
   MAIL_FROM?: string;
 
+  /** URL pública do frontend — base dos links enviados por e-mail. */
+  @IsOptional()
+  @IsString()
+  FRONTEND_URL?: string;
+
   @IsOptional()
   @IsString()
   SMTP_HOST?: string;
@@ -109,6 +114,7 @@ export interface AppEnv {
   JWT_SECRET: string;
   JWT_EXPIRES_IN?: string;
   MAIL_FROM?: string;
+  FRONTEND_URL: string;
   SMTP_HOST?: string;
   SMTP_PORT?: number;
   SMTP_USER?: string;
@@ -116,6 +122,7 @@ export interface AppEnv {
 }
 
 const DEFAULT_CORS_ORIGIN = 'http://localhost:5173';
+const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
 const DEFAULT_PORT = 3000;
 const DEFAULT_NODE_ENV = 'development';
 
@@ -216,6 +223,7 @@ export function validateEnv(
     JWT_SECRET: resolveJwtSecret(parsed.JWT_SECRET, nodeEnv),
     JWT_EXPIRES_IN: parsed.JWT_EXPIRES_IN ?? DEFAULT_JWT_EXPIRES_IN,
     MAIL_FROM: parsed.MAIL_FROM ?? DEFAULT_MAIL_FROM,
+    FRONTEND_URL: parsed.FRONTEND_URL ?? DEFAULT_FRONTEND_URL,
     SMTP_HOST: parsed.SMTP_HOST,
     SMTP_PORT: parsed.SMTP_PORT,
     SMTP_USER: parsed.SMTP_USER,

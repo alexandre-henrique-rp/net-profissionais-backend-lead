@@ -2,15 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { createTransport, type Transporter } from 'nodemailer';
 import { env } from '../config/env.js';
 
-/**
- * Base dos links enviados por e-mail.
- *
- * Enquanto o produto roda em desenvolvimento, o frontend vive em
- * `localhost:5173`. Quando houver domínio público, esta constante vira uma
- * variável de ambiente (`FRONTEND_URL`) — é o único ponto que muda.
- */
-const FRONTEND_BASE_URL = 'http://localhost:5173';
-
 /** Caminhos das telas que consomem os tokens enviados por e-mail. */
 const PATHS = {
   resetPassword: '/recuperar-senha',
@@ -30,10 +21,13 @@ export class MailService {
   private readonly logger = new Logger(MailService.name);
   private readonly transporter?: Transporter;
   private readonly from: string;
+  /** Base dos links enviados por e-mail (`FRONTEND_URL`; dev: localhost:5173). */
+  private readonly frontendBaseUrl: string;
 
   constructor() {
     const config = env();
     this.from = config.MAIL_FROM ?? 'nao-responda@netprofissionais.com.br';
+    this.frontendBaseUrl = config.FRONTEND_URL;
 
     if (!config.SMTP_HOST) {
       this.logger.warn(
@@ -56,7 +50,7 @@ export class MailService {
 
   /** Link de redefinição de senha (Tela `01-C-D` / `04-C-D`). */
   async sendPasswordReset(to: string, name: string, token: string): Promise<void> {
-    const link = `${FRONTEND_BASE_URL}${PATHS.resetPassword}?token=${encodeURIComponent(token)}`;
+    const link = `${this.frontendBaseUrl}${PATHS.resetPassword}?token=${encodeURIComponent(token)}`;
 
     await this.send({
       to,
@@ -86,7 +80,7 @@ export class MailService {
     token: string,
     tenantName: string,
   ): Promise<void> {
-    const link = `${FRONTEND_BASE_URL}${PATHS.activateAccount}?token=${encodeURIComponent(token)}`;
+    const link = `${this.frontendBaseUrl}${PATHS.activateAccount}?token=${encodeURIComponent(token)}`;
 
     await this.send({
       to,
@@ -111,7 +105,7 @@ export class MailService {
 
   /** Confirmação de que a conta foi ativada — fecha o onboarding. */
   async sendAccountActivated(to: string, name: string): Promise<void> {
-    const link = `${FRONTEND_BASE_URL}/login`;
+    const link = `${this.frontendBaseUrl}/login`;
 
     await this.send({
       to,
