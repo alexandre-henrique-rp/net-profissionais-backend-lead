@@ -7,6 +7,7 @@ const compose = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8');
 const deployScript = readFileSync(resolve(root, 'deploy.sh'), 'utf8');
 const nginxConfig = readFileSync(resolve(root, 'deploy/nginx.conf'), 'utf8');
 const dockerignore = readFileSync(resolve(root, '.dockerignore'), 'utf8');
+const prismaSchema = readFileSync(resolve(root, 'prisma/schema.prisma'), 'utf8');
 
 describe('deploy Docker blue-green', () => {
   it('@spec:AC-212 a imagem runtime inclui o build e dependências e escuta na porta 3000', () => {
@@ -32,6 +33,8 @@ describe('deploy Docker blue-green', () => {
         .filter((line) => line.startsWith('FROM '))
         .at(-1),
     ).toBe('FROM node:24-alpine AS runtime');
+    expect(prismaSchema).toContain('generatedFileExtension = "ts"');
+    expect(prismaSchema).toContain('importFileExtension    = "js"');
   });
 
   it('@spec:AC-213 somente o proxy publica a porta 3000 do host', () => {

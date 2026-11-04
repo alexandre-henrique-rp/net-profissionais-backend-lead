@@ -10,8 +10,10 @@
 // de contato de um não podem ser lidos pelo outro (LGPD).
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  generatedFileExtension = "ts"
+  importFileExtension    = "js"
 }
 
 datasource db {
