@@ -59,15 +59,31 @@ $ yarn run test:cov
 
 ## Docker deployment (blue-green)
 
-The API runs in two internal Docker slots (`api-blue` and `api-green`). Nginx
-is the only service that publishes host port `3000`. The deploy CLI builds and
-starts the inactive slot, waits for its `/api/v1/health` healthcheck, validates
-and reloads Nginx, verifies the public health URL, and only then drains and
-stops the previous slot. A failed build or candidate healthcheck leaves the
-currently routed slot running.
+The API runs in two Docker slots (`api-blue` and `api-green`), each publishing
+a distinct loopback host port: blue on `127.0.0.1:3000` and green on
+`127.0.0.1:3001`. There is **no internal proxy container** — the Nginx already
+installed on the server does the reverse proxy.
 
-PostgreSQL and Redis remain external services; this Compose file does not create
-or reset either database. Prepare a production environment file on the server:
+The traffic switch works through an upstream file: `deploy.sh` rewrites
+`.deploy/upstream.conf` pointing to the healthy slot's port and reloads the
+host Nginx (`nginx -t && nginx -s reload`, or `NGINX_RELOAD_CMD` when set).
+A failed build or candidate healthcheck leaves the currently routed slot
+running. If the Nginx reload cannot run automatically, the candidate stays
+healthy and upstream-pointed while the old slot keeps running as fallback
+until you reload Nginx and stop it manually.
+
+### Host Nginx setup (one-time)
+
+`deploy/nginx-site.example.conf` is a ready server block for the host Nginx.
+Copy it into `sites-available`/`conf.d`, adjust `server_name` and the
+**absolute path** of `include .../.deploy/upstream.conf`, enable the site and
+run `nginx -t && nginx -s reload`. If the deploy user cannot reload Nginx,
+export `NGINX_RELOAD_CMD="sudo systemctl reload nginx"` before running the
+CLI.
+
+PostgreSQL and Redis remain external services; this Compose file does not
+create or reset either database. Prepare a production environment file on the
+server:
 
 ```bash
 cp .env.example .env.prod
@@ -80,8 +96,7 @@ inside `.env.prod` means the API container itself. Set `CORS_ORIGIN` to the
 frontend's public origin. Never commit `.env.prod` or copy it into the image:
 Compose injects it at runtime, and `.gitignore`/`.dockerignore` exclude it.
 
-On the server, clone this repository, configure `.env.prod`, ensure host port
-`3000` is free for the first installation, and run:
+On the server, clone this repository, configure `.env.prod`, and run:
 
 ```bash
 chmod +x deploy.sh
@@ -97,11 +112,11 @@ the actions directly:
 ```
 
 Updating uses `git pull --ff-only`, builds a release-tagged image, starts the
-inactive slot, and swaps traffic only after health and proxy checks pass. The
-previous slot's container is retained stopped for one rollback. Cleanup removes
-only old `net-profissionais-backend-lead` images that no container references;
-it does not run a global Docker prune. The host exposes the API at
-`http://localhost:3000/api/v1`.
+inactive slot on its own port, and repoints the Nginx upstream only after the
+candidate healthcheck passes. The previous slot's container is retained
+stopped for one rollback. Cleanup removes only old
+`net-profissionais-backend-lead` images that no container references; it does
+not run a global Docker prune.
 
 Check status and logs with:
 

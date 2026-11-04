@@ -24,18 +24,25 @@ x-api: &api
   networks:
     - api
 
+# Sem proxy interno: o Nginx do servidor (host) faz o proxy reverso.
+# Cada slot publica uma porta distinta apenas em 127.0.0.1 e o deploy.sh
+# reescreve .deploy/upstream.conf apontando para o slot ativo.
 services:
   api-blue:
     <<: *api
     build:
       context: .
       target: runtime
+    ports:
+      - "127.0.0.1:3000:3000"
 
   api-green:
     <<: *api
     build:
       context: .
       target: runtime
+    ports:
+      - "127.0.0.1:3001:3000"
 
   api-migrate:
     image: net-profissionais-backend-lead-migrate:${RELEASE_TAG:-local}
@@ -48,17 +55,6 @@ services:
       NODE_ENV: production
     profiles:
       - migration
-
-  proxy:
-    image: nginx:1.27-alpine
-    ports:
-      - "3000:80"
-    volumes:
-      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./.deploy:/etc/nginx/deploy:ro
-    restart: unless-stopped
-    networks:
-      - api
 
 networks:
   api:

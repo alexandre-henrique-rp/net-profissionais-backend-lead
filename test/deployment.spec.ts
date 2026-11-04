@@ -5,7 +5,7 @@ const root = process.cwd();
 const dockerfile = readFileSync(resolve(root, 'Dockerfile'), 'utf8');
 const compose = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8');
 const deployScript = readFileSync(resolve(root, 'deploy.sh'), 'utf8');
-const nginxConfig = readFileSync(resolve(root, 'deploy/nginx.conf'), 'utf8');
+const nginxSite = readFileSync(resolve(root, 'deploy/nginx-site.example.conf'), 'utf8');
 const dockerignore = readFileSync(resolve(root, '.dockerignore'), 'utf8');
 const prismaSchema = readFileSync(resolve(root, 'prisma/schema.prisma'), 'utf8');
 
@@ -37,28 +37,34 @@ describe('deploy Docker blue-green', () => {
     expect(prismaSchema).toContain('importFileExtension    = "js"');
   });
 
-  it('@spec:AC-213 somente o proxy publica a porta 3000 do host', () => {
+  it('@spec:AC-213 os slots publicam 127.0.0.1:3000/3001 e não há proxy interno', () => {
     const apiDefaults = compose.match(
-      /x-api: &api\n([\s\S]*?)\n\nservices:/,
+      /x-api: &api\n([\s\S]*?)\nservices:/,
     )?.[1];
     const apiBlue = compose.match(/  api-blue:\n([\s\S]*?)\n  api-green:/)?.[1];
     const apiGreen = compose.match(
       /  api-green:\n([\s\S]*?)\n  api-migrate:/,
     )?.[1];
-    const proxy = compose.match(/  proxy:\n([\s\S]*?)\n\nnetworks:/)?.[1];
-    const publishedPorts = [...compose.matchAll(/^\s+- "(\d+:\d+)"$/gm)].map(
-      (match) => match[1],
-    );
+    const publishedPorts = [
+      ...compose.matchAll(/^\s+- "127\.0\.0\.1:\d+:\d+"$/gm),
+    ].map((match) => match[0].trim().replaceAll('"', '').replace('- ', ''));
 
     expect(apiDefaults).toContain('expose:');
     expect(apiDefaults).toContain('"3000"');
     expect(apiBlue).toContain('<<: *api');
-    expect(apiBlue).not.toContain('ports:');
+    expect(apiBlue).toContain('127.0.0.1:3000:3000');
     expect(apiGreen).toContain('<<: *api');
-    expect(apiGreen).not.toContain('ports:');
-    expect(publishedPorts).toEqual(['3000:80']);
-    expect(proxy).toContain('3000:80');
-    expect(nginxConfig).toContain('proxy_pass http://backend_active');
+    expect(apiGreen).toContain('127.0.0.1:3001:3000');
+    expect(publishedPorts).toEqual([
+      '127.0.0.1:3000:3000',
+      '127.0.0.1:3001:3000',
+    ]);
+    expect(compose).not.toContain('image: nginx');
+    expect(compose).not.toContain('  proxy:');
+    expect(nginxSite).toContain('proxy_pass http://netprofissional_api');
+    expect(nginxSite).toContain('.deploy/upstream.conf');
+    expect(deployScript).toContain('upstream netprofissional_api');
+    expect(deployScript).toContain('server 127.0.0.1:%s');
   });
 
   it('@spec:AC-214 falha de healthcheck ou troca preserva o slot ativo', () => {
@@ -92,9 +98,11 @@ describe('deploy Docker blue-green', () => {
     expect(updateFlow.indexOf('switch_traffic "$candidate"')).toBeLessThan(
       updateFlow.indexOf('compose stop --timeout 30 "$old_service"'),
     );
-    expect(deployScript).toContain('nginx -t');
     expect(deployScript).toContain('nginx -s reload');
     expect(deployScript).toContain('restaurando o upstream anterior');
+    expect(deployScript).toContain('NGINX_RELOAD_CMD');
+    expect(deployScript).toContain('.deploy');
+    expect(deployScript).toContain('segue rodando como fallback');
   });
 
   it('@spec:AC-216 a limpeza só remove imagens antigas deste projeto sem containers', () => {

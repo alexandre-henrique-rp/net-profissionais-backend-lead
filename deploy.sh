@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
-# Atualização blue-green da API: candidata saudável antes da troca de tráfego.
+# Atualização blue-green da API sem proxy interno.
+#
+# Cada slot publica uma porta no host (blue=3000, green=3001, apenas 127.0.0.1).
+# A troca de tráfego reescreve .deploy/upstream.conf — arquivo que o Nginx
+# DO SERVIDOR inclui (ver deploy/nginx-site.example.conf) — e recarrega o
+# Nginx do host. Se o reload automático não for possível, a candidata fica
+# apontada no upstream e o slot antigo segue rodando até a confirmação.
+#
+# Variáveis opcionais:
+#   NGINX_RELOAD_CMD → comando para recarregar o Nginx do servidor
+#                      (padrão: nginx -t && nginx -s reload, depois sudo -n)
+#   DRAIN_SECONDS    → espera antes de parar o slot antigo (padrão: 10)
+#   HEALTH_TIMEOUT   → espera máxima pela candidata saudável (padrão: 120)
 
 set -Eeuo pipefail
 
@@ -28,7 +40,7 @@ compose() {
 
 require_tools() {
 	command -v curl >/dev/null 2>&1 || {
-		echo "ERRO: curl é necessário para verificar a API no proxy." >&2
+		echo "ERRO: curl é necessário para validar a saúde dos slots." >&2
 		return 1
 	}
 	[[ -f "$ROOT/.env.prod" ]] || {
@@ -37,16 +49,28 @@ require_tools() {
 	}
 }
 
+slot_port() {
+	case "$1" in
+		blue) echo 3000 ;;
+		green) echo 3001 ;;
+		*) return 1 ;;
+	esac
+}
+
 current_slot() {
 	if [[ -f "$UPSTREAM_FILE" ]]; then
-		sed -nE 's/^[[:space:]]*server api-(blue|green):3000;.*/\1/p' "$UPSTREAM_FILE" | head -n 1
+		case "$(sed -nE 's/^[[:space:]]*server 127\.0\.0\.1:([0-9]+);.*/\1/p' "$UPSTREAM_FILE" | head -n 1)" in
+			3000) echo blue ;;
+			3001) echo green ;;
+		esac
 	fi
 }
 
 write_upstream() {
-	local slot="$1"
-	local tmp="$UPSTREAM_FILE.tmp"
-	printf 'upstream backend_active {\n\tserver api-%s:3000;\n}\n' "$slot" >"$tmp"
+	local slot="$1" port tmp
+	port="$(slot_port "$slot")"
+	tmp="$UPSTREAM_FILE.tmp"
+	printf 'upstream netprofissional_api {\n\tserver 127.0.0.1:%s;\n}\n' "$port" >"$tmp"
 	mv "$tmp" "$UPSTREAM_FILE"
 }
 
@@ -83,12 +107,13 @@ wait_for_health() {
 	return 1
 }
 
-wait_for_proxy() {
-	local timeout="${1:-30}"
+wait_for_http() {
+	local port="$1"
+	local timeout="${2:-30}"
 	local elapsed=0
 	while ((elapsed < timeout)); do
 		if curl --fail --silent --show-error --max-time 2 \
-			http://127.0.0.1:3000/api/v1/health >/dev/null 2>&1; then
+			"http://127.0.0.1:${port}/api/v1/health" >/dev/null 2>&1; then
 			return 0
 		fi
 		sleep 2
@@ -97,19 +122,31 @@ wait_for_proxy() {
 	return 1
 }
 
-reload_proxy() {
-	local proxy_id
-	proxy_id="$(container_id proxy)"
-	[[ -n "$proxy_id" ]] || return 1
-	[[ "$(docker inspect --format '{{.State.Running}}' "$proxy_id")" == "true" ]] || return 1
-	compose exec --no-TTY proxy nginx -t
-	compose exec --no-TTY proxy nginx -s reload
+# Recarrega o Nginx do SERVIDOR. Códigos de retorno:
+#   0 = recarregado · 1 = Nginx existe mas recusou/falhou · 2 = reload manual pendente
+reload_host_nginx() {
+	if [[ -n "${NGINX_RELOAD_CMD:-}" ]]; then
+		eval "$NGINX_RELOAD_CMD"
+		return $?
+	fi
+	if ! command -v nginx >/dev/null 2>&1; then
+		return 2
+	fi
+	if nginx -t >/dev/null 2>&1 && nginx -s reload >/dev/null 2>&1; then
+		return 0
+	fi
+	if sudo -n true >/dev/null 2>&1 &&
+		sudo -n nginx -t >/dev/null 2>&1 && sudo -n nginx -s reload >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
 }
 
+# Troca o tráfego para o slot. Retorno:
+#   0 = trocado e validado · 3 = upstream apontado, reload do Nginx pendente · 1 = falhou
 switch_traffic() {
-	local target="$1"
-	local previous_config=""
-	local had_previous=0
+	local target="$1" port previous_config="" had_previous=0 rc
+	port="$(slot_port "$target")"
 
 	if [[ -f "$UPSTREAM_FILE" ]]; then
 		previous_config="$(cat "$UPSTREAM_FILE")"
@@ -118,35 +155,28 @@ switch_traffic() {
 
 	write_upstream "$target"
 
-	if [[ -n "$(container_id proxy)" ]] &&
-		[[ "$(docker inspect --format '{{.State.Running}}' "$(container_id proxy)")" == "true" ]]; then
-		if ! reload_proxy; then
-			echo "ERRO: Nginx recusou a nova configuração; restaurando o upstream anterior."
-			if ((had_previous)); then
-				printf '%s\n' "$previous_config" >"$UPSTREAM_FILE"
-				compose exec --no-TTY proxy nginx -t >/dev/null 2>&1 || true
-				compose exec --no-TTY proxy nginx -s reload >/dev/null 2>&1 || true
-			fi
-			return 1
-		fi
-	else
-		if ! compose up -d proxy; then
-			echo "ERRO: não foi possível iniciar o proxy."
-			if ((had_previous)); then
-				printf '%s\n' "$previous_config" >"$UPSTREAM_FILE"
-			fi
-			return 1
-		fi
+	reload_host_nginx
+	rc=$?
+	if ((rc == 2)); then
+		echo "AVISO: não consegui recarregar o Nginx do servidor automaticamente."
+		echo "       O upstream já aponta para api-$target (:$port) em $UPSTREAM_FILE."
+		echo "       Após conferir o include no site do Nginx, rode: nginx -t && nginx -s reload"
+		return 3
 	fi
-
-	if ! wait_for_proxy; then
-		echo "ERRO: a API não respondeu pelo proxy; restaurando o upstream anterior."
+	if ((rc == 1)); then
+		echo "ERRO: o Nginx do servidor recusou a nova configuração; restaurando o upstream anterior."
 		if ((had_previous)); then
 			printf '%s\n' "$previous_config" >"$UPSTREAM_FILE"
-			compose exec --no-TTY proxy nginx -t >/dev/null 2>&1 || true
-			compose exec --no-TTY proxy nginx -s reload >/dev/null 2>&1 || true
-		else
-			compose stop proxy >/dev/null 2>&1 || true
+			reload_host_nginx >/dev/null 2>&1 || true
+		fi
+		return 1
+	fi
+
+	if ! wait_for_http "$port"; then
+		echo "ERRO: api-$target saudável no container mas não responde em 127.0.0.1:$port; restaurando o upstream anterior."
+		if ((had_previous)); then
+			printf '%s\n' "$previous_config" >"$UPSTREAM_FILE"
+			reload_host_nginx >/dev/null 2>&1 || true
 		fi
 		return 1
 	fi
@@ -170,7 +200,7 @@ cleanup_project_images() {
 }
 
 deploy_update() {
-	local old_slot candidate old_service candidate_service old_id
+	local old_slot candidate old_service candidate_service old_id switch_rc
 
 	require_tools
 	echo "== 1/6 · Atualizando código (fast-forward) =="
@@ -208,7 +238,7 @@ deploy_update() {
 	echo "== 2/6 · Construindo imagem $RELEASE_TAG =="
 	compose build "$candidate_service"
 
-	echo "== 3/6 · Iniciando candidata no slot $candidate =="
+	echo "== 3/6 · Iniciando candidata no slot $candidate (porta $(slot_port "$candidate")) =="
 	if ! compose up -d --no-deps --force-recreate "$candidate_service"; then
 		echo "ERRO: candidata não iniciou; o slot atual não foi alterado." >&2
 		return 1
@@ -219,8 +249,10 @@ deploy_update() {
 		return 1
 	fi
 
-	echo "== 4/6 · Validando e trocando o tráfego =="
-	if ! switch_traffic "$candidate"; then
+	echo "== 4/6 · Apontando o upstream do Nginx do servidor =="
+	switch_traffic "$candidate"
+	switch_rc=$?
+	if ((switch_rc == 1)); then
 		if [[ -n "$old_slot" ]]; then
 			compose stop "$candidate_service" >/dev/null 2>&1 || true
 			echo "Slot atual $old_service continua atendendo."
@@ -229,7 +261,13 @@ deploy_update() {
 	fi
 
 	echo "$candidate" >"$DEPLOY_DIR/active-slot"
-	if [[ -n "$old_service" ]]; then
+	if ((switch_rc == 3)); then
+		echo "== 5/6 · Troca pendente de confirmação no Nginx do servidor =="
+		if [[ -n "$old_service" ]]; then
+			echo "O slot antigo $old_service segue rodando como fallback."
+			echo "Depois do 'nginx -s reload', pare-o com: docker compose stop $old_service"
+		fi
+	elif [[ -n "$old_service" ]]; then
 		echo "== 5/6 · Drenando conexões por ${DRAIN_SECONDS}s e parando $old_service =="
 		sleep "$DRAIN_SECONDS"
 		compose stop --timeout 30 "$old_service"
@@ -239,12 +277,11 @@ deploy_update() {
 
 	echo "== 6/6 · Limpando apenas imagens antigas não utilizadas deste projeto =="
 	cleanup_project_images
-	echo "✔ API atualizada sem interromper o slot anterior durante a validação."
-	echo "API: http://localhost:3000/api/v1/health · slot ativo: $candidate"
+	echo "✔ API no slot $candidate (porta $(slot_port "$candidate")); upstream em $UPSTREAM_FILE."
 }
 
 rollback() {
-	local active previous active_service previous_service previous_id
+	local active previous active_service previous_service previous_id switch_rc
 	require_tools
 	active="$(current_slot)"
 	case "$active" in
@@ -263,19 +300,25 @@ rollback() {
 		return 1
 	fi
 
-	echo "Iniciando e validando o slot anterior $previous..."
+	echo "Iniciando e validando o slot anterior $previous (porta $(slot_port "$previous"))..."
 	compose start "$previous_service"
 	if ! wait_for_health "$previous_service" "$HEALTH_TIMEOUT"; then
 		echo "Rollback cancelado; o slot atual $active continua atendendo."
 		return 1
 	fi
-	if ! switch_traffic "$previous"; then
+	switch_traffic "$previous"
+	switch_rc=$?
+	if ((switch_rc == 1)); then
 		echo "Rollback não confirmado; o slot atual $active continua atendendo."
 		return 1
 	fi
 	echo "$previous" >"$DEPLOY_DIR/active-slot"
-	sleep "$DRAIN_SECONDS"
-	compose stop --timeout 30 "$active_service"
+	if ((switch_rc == 3)); then
+		echo "Troca pendente no Nginx do servidor; $active_service segue rodando como fallback."
+	else
+		sleep "$DRAIN_SECONDS"
+		compose stop --timeout 30 "$active_service"
+	fi
 	RELEASE_TAG="$(git rev-parse --short=12 HEAD)"
 	cleanup_project_images
 	echo "✔ Rollback concluído; slot ativo: $previous."
