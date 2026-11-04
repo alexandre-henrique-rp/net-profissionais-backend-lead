@@ -9,6 +9,10 @@ x-api: &api
     PORT: "3000"
   expose:
     - "3000"
+  # Permite que DATABASE_URL/REDIS_URL apontem para o host onde Postgres e
+  # Redis rodam como serviços do sistema: use host.docker.internal no .env.prod
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   restart: unless-stopped
   stop_grace_period: 40s
   healthcheck:
@@ -53,6 +57,8 @@ services:
       - .env.prod
     environment:
       NODE_ENV: production
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     profiles:
       - migration
 
