@@ -3,13 +3,11 @@
 #
 # Cada slot publica uma porta no host (blue=3000, green=3001, apenas 127.0.0.1).
 # A troca de tráfego reescreve .deploy/upstream.conf — arquivo que o Nginx
-# DO SERVIDOR inclui (ver deploy/nginx-site.example.conf) — e recarrega o
-# Nginx do host. Se o reload automático não for possível, a candidata fica
-# apontada no upstream e o slot antigo segue rodando até a confirmação.
+# DO SERVIDOR inclui (ver deploy/nginx-site.example.conf). O reload do Nginx
+# é MANUAL: o script pergunta se você já recarregou antes de parar o slot
+# antigo; sem confirmação, o slot antigo segue rodando como fallback.
 #
 # Variáveis opcionais:
-#   NGINX_RELOAD_CMD → comando para recarregar o Nginx do servidor
-#                      (padrão: nginx -t && nginx -s reload, depois sudo -n)
 #   DRAIN_SECONDS    → espera antes de parar o slot antigo (padrão: 10)
 #   HEALTH_TIMEOUT   → espera máxima pela candidata saudável (padrão: 120)
 
@@ -122,30 +120,11 @@ wait_for_http() {
 	return 1
 }
 
-# Recarrega o Nginx do SERVIDOR. Códigos de retorno:
-#   0 = recarregado · 1 = Nginx existe mas recusou/falhou · 2 = reload manual pendente
-reload_host_nginx() {
-	if [[ -n "${NGINX_RELOAD_CMD:-}" ]]; then
-		eval "$NGINX_RELOAD_CMD"
-		return $?
-	fi
-	if ! command -v nginx >/dev/null 2>&1; then
-		return 2
-	fi
-	if nginx -t >/dev/null 2>&1 && nginx -s reload >/dev/null 2>&1; then
-		return 0
-	fi
-	if sudo -n true >/dev/null 2>&1 &&
-		sudo -n nginx -t >/dev/null 2>&1 && sudo -n nginx -s reload >/dev/null 2>&1; then
-		return 0
-	fi
-	return 1
-}
-
-# Troca o tráfego para o slot. Retorno:
-#   0 = trocado e validado · 3 = upstream apontado, reload do Nginx pendente · 1 = falhou
+# Troca o tráfego para o slot: escreve o upstream, valida a candidata na
+# própria porta e informa o reload manual do Nginx do servidor.
+# Retorno: 0 = upstream apontado e candidata respondendo · 1 = falhou
 switch_traffic() {
-	local target="$1" port previous_config="" had_previous=0 rc
+	local target="$1" port previous_config="" had_previous=0
 	port="$(slot_port "$target")"
 
 	if [[ -f "$UPSTREAM_FILE" ]]; then
@@ -155,33 +134,28 @@ switch_traffic() {
 
 	write_upstream "$target"
 
-	reload_host_nginx
-	rc=$?
-	if ((rc == 2)); then
-		echo "AVISO: não consegui recarregar o Nginx do servidor automaticamente."
-		echo "       O upstream já aponta para api-$target (:$port) em $UPSTREAM_FILE."
-		echo "       Após conferir o include no site do Nginx, rode: nginx -t && nginx -s reload"
-		return 3
-	fi
-	if ((rc == 1)); then
-		echo "ERRO: o Nginx do servidor recusou a nova configuração; restaurando o upstream anterior."
-		if ((had_previous)); then
-			printf '%s\n' "$previous_config" >"$UPSTREAM_FILE"
-			reload_host_nginx >/dev/null 2>&1 || true
-		fi
-		return 1
-	fi
-
 	if ! wait_for_http "$port"; then
-		echo "ERRO: api-$target saudável no container mas não responde em 127.0.0.1:$port; restaurando o upstream anterior."
+		echo "ERRO: api-$target não responde em 127.0.0.1:$port; restaurando o upstream anterior."
 		if ((had_previous)); then
 			printf '%s\n' "$previous_config" >"$UPSTREAM_FILE"
-			reload_host_nginx >/dev/null 2>&1 || true
 		fi
 		return 1
 	fi
 
+	echo "Upstream apontado para api-$target (127.0.0.1:$port) em $UPSTREAM_FILE."
+	echo ">>> Recarregue o Nginx do servidor: sudo nginx -t && sudo systemctl reload nginx"
 	return 0
+}
+
+# Pede confirmação de que o Nginx do servidor já foi recarregado.
+# Retorno: 0 = confirmado · 1 = pendente (ou sem TTY)
+confirm_nginx_reload() {
+	local resposta
+	if [[ ! -t 0 ]]; then
+		return 1
+	fi
+	read -r -p "Nginx do servidor já recarregado e a API respondendo? [s/N] " resposta
+	[[ "$resposta" =~ ^[sS]$ ]]
 }
 
 cleanup_project_images() {
@@ -200,7 +174,7 @@ cleanup_project_images() {
 }
 
 deploy_update() {
-	local old_slot candidate old_service candidate_service old_id switch_rc
+	local old_slot candidate old_service candidate_service old_id
 
 	require_tools
 	echo "== 1/6 · Atualizando código (fast-forward) =="
@@ -250,9 +224,7 @@ deploy_update() {
 	fi
 
 	echo "== 4/6 · Apontando o upstream do Nginx do servidor =="
-	switch_traffic "$candidate"
-	switch_rc=$?
-	if ((switch_rc == 1)); then
+	if ! switch_traffic "$candidate"; then
 		if [[ -n "$old_slot" ]]; then
 			compose stop "$candidate_service" >/dev/null 2>&1 || true
 			echo "Slot atual $old_service continua atendendo."
@@ -261,12 +233,10 @@ deploy_update() {
 	fi
 
 	echo "$candidate" >"$DEPLOY_DIR/active-slot"
-	if ((switch_rc == 3)); then
+	if [[ -n "$old_service" ]] && ! confirm_nginx_reload; then
 		echo "== 5/6 · Troca pendente de confirmação no Nginx do servidor =="
-		if [[ -n "$old_service" ]]; then
-			echo "O slot antigo $old_service segue rodando como fallback."
-			echo "Depois do 'nginx -s reload', pare-o com: docker compose stop $old_service"
-		fi
+		echo "O slot antigo $old_service segue rodando como fallback."
+		echo "Depois de recarregar o Nginx, pare-o com: docker compose stop $old_service"
 	elif [[ -n "$old_service" ]]; then
 		echo "== 5/6 · Drenando conexões por ${DRAIN_SECONDS}s e parando $old_service =="
 		sleep "$DRAIN_SECONDS"
@@ -281,7 +251,7 @@ deploy_update() {
 }
 
 rollback() {
-	local active previous active_service previous_service previous_id switch_rc
+	local active previous active_service previous_service previous_id
 	require_tools
 	active="$(current_slot)"
 	case "$active" in
@@ -306,18 +276,16 @@ rollback() {
 		echo "Rollback cancelado; o slot atual $active continua atendendo."
 		return 1
 	fi
-	switch_traffic "$previous"
-	switch_rc=$?
-	if ((switch_rc == 1)); then
+	if ! switch_traffic "$previous"; then
 		echo "Rollback não confirmado; o slot atual $active continua atendendo."
 		return 1
 	fi
 	echo "$previous" >"$DEPLOY_DIR/active-slot"
-	if ((switch_rc == 3)); then
-		echo "Troca pendente no Nginx do servidor; $active_service segue rodando como fallback."
-	else
+	if confirm_nginx_reload; then
 		sleep "$DRAIN_SECONDS"
 		compose stop --timeout 30 "$active_service"
+	else
+		echo "Troca pendente no Nginx do servidor; $active_service segue rodando como fallback."
 	fi
 	RELEASE_TAG="$(git rev-parse --short=12 HEAD)"
 	cleanup_project_images

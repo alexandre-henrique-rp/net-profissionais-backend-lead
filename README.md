@@ -65,21 +65,21 @@ a distinct loopback host port: blue on `127.0.0.1:3000` and green on
 installed on the server does the reverse proxy.
 
 The traffic switch works through an upstream file: `deploy.sh` rewrites
-`.deploy/upstream.conf` pointing to the healthy slot's port and reloads the
-host Nginx (`nginx -t && nginx -s reload`, or `NGINX_RELOAD_CMD` when set).
-A failed build or candidate healthcheck leaves the currently routed slot
-running. If the Nginx reload cannot run automatically, the candidate stays
-healthy and upstream-pointed while the old slot keeps running as fallback
-until you reload Nginx and stop it manually.
+`.deploy/upstream.conf` pointing to the healthy slot's port and prints the
+command to reload the host Nginx (`sudo nginx -t && sudo systemctl reload
+nginx`). The Nginx reload is **manual** — the script asks for confirmation
+before stopping the old slot; without it, the old slot keeps running as
+fallback until you reload Nginx and stop it with `docker compose stop
+api-<slot>`. A failed build or candidate healthcheck leaves the currently
+routed slot running.
 
 ### Host Nginx setup (one-time)
 
 `deploy/nginx-site.example.conf` is a ready server block for the host Nginx.
 Copy it into `sites-available`/`conf.d`, adjust `server_name` and the
 **absolute path** of `include .../.deploy/upstream.conf`, enable the site and
-run `nginx -t && nginx -s reload`. If the deploy user cannot reload Nginx,
-export `NGINX_RELOAD_CMD="sudo systemctl reload nginx"` before running the
-CLI.
+run `nginx -t && nginx -s reload`. Every later update only rewrites the
+included upstream file, so an `nginx` reload is all the switch needs.
 
 PostgreSQL and Redis remain external services; this Compose file does not
 create or reset either database. Prepare a production environment file on the

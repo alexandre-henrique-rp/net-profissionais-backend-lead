@@ -98,9 +98,9 @@ describe('deploy Docker blue-green', () => {
     expect(updateFlow.indexOf('switch_traffic "$candidate"')).toBeLessThan(
       updateFlow.indexOf('compose stop --timeout 30 "$old_service"'),
     );
-    expect(deployScript).toContain('nginx -s reload');
+    expect(deployScript).toContain('sudo nginx -t');
     expect(deployScript).toContain('restaurando o upstream anterior');
-    expect(deployScript).toContain('NGINX_RELOAD_CMD');
+    expect(deployScript).toContain('confirm_nginx_reload');
     expect(deployScript).toContain('.deploy');
     expect(deployScript).toContain('segue rodando como fallback');
   });
