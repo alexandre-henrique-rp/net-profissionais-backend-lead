@@ -60,8 +60,8 @@ $ yarn run test:cov
 ## Docker deployment (blue-green)
 
 The API runs in two Docker slots (`api-blue` and `api-green`), each publishing
-a distinct loopback host port: blue on `127.0.0.1:3000` and green on
-`127.0.0.1:3002`. There is **no internal proxy container** — the Nginx already
+a distinct published host port: blue on `3000` and green on
+`3002`. There is **no internal proxy container** — the Nginx already
 installed on the server does the reverse proxy.
 
 The traffic switch works through an upstream file: `deploy.sh` rewrites

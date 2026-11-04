@@ -37,7 +37,7 @@ describe('deploy Docker blue-green', () => {
     expect(prismaSchema).toContain('importFileExtension    = "js"');
   });
 
-  it('@spec:AC-213 os slots publicam 127.0.0.1:3000/3002 e não há proxy interno', () => {
+  it('@spec:AC-213 os slots publicam as portas 3000/3002 no host e não há proxy interno', () => {
     const apiDefaults = compose.match(
       /x-api: &api\n([\s\S]*?)\nservices:/,
     )?.[1];
@@ -46,19 +46,16 @@ describe('deploy Docker blue-green', () => {
       /  api-green:\n([\s\S]*?)\n  api-migrate:/,
     )?.[1];
     const publishedPorts = [
-      ...compose.matchAll(/^\s+- "127\.0\.0\.1:\d+:\d+"$/gm),
-    ].map((match) => match[0].trim().replaceAll('"', '').replace('- ', ''));
+      ...compose.matchAll(/^\s+- "(\d+:\d+)"$/gm),
+    ].map((match) => match[1]);
 
     expect(apiDefaults).toContain('expose:');
     expect(apiDefaults).toContain('"3000"');
     expect(apiBlue).toContain('<<: *api');
-    expect(apiBlue).toContain('127.0.0.1:3000:3000');
+    expect(apiBlue).toContain('3000:3000');
     expect(apiGreen).toContain('<<: *api');
-    expect(apiGreen).toContain('127.0.0.1:3002:3000');
-    expect(publishedPorts).toEqual([
-      '127.0.0.1:3000:3000',
-      '127.0.0.1:3002:3000',
-    ]);
+    expect(apiGreen).toContain('3002:3000');
+    expect(publishedPorts).toEqual(['3000:3000', '3002:3000']);
     expect(compose).not.toContain('image: nginx');
     expect(compose).not.toContain('  proxy:');
     expect(nginxSite).toContain('proxy_pass http://netprofissional_api');
