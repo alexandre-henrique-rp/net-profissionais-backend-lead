@@ -1,0 +1,293 @@
+// Schema Prisma do MVP 1 — NetProfissional (Marco 1).
+// Fonte: doc/mvp/specs/task-s01-03.md, task-s01-04.md, task-s01-05.md
+// e doc/mvp/02-arquitetura-e-banco-do-mvp.md.
+//
+// Isolamento por tenant: `Lead` é a identidade única do cliente e `TenantLead`
+// é a oportunidade comercial dentro de uma corporação.
+//
+// Dado pessoal é escopado por tenant: `LeadContact` e `LeadSpecialDate` carregam
+// `tenantId` próprio, porque dois tenants podem atender o mesmo CNPJ e os dados
+// de contato de um não podem ser lidos pelo outro (LGPD).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// Papel de corpus: o que a pessoa pode fazer na corporação.
+enum UserRole {
+  ADMIN
+  USUARIO
+}
+
+/// Subfunção operacional: define qual dashboard e quais rotas a pessoa enxerga.
+enum OperationalRole {
+  ADMIN
+  CAPTADOR
+  VENDEDOR
+}
+
+enum UserStatus {
+  ACTIVE
+  PENDING
+  BLOCKED
+}
+
+enum PersonType {
+  PJ
+  PF
+}
+
+/// Estado da oportunidade dentro do funil/pool da corporação.
+enum TenantLeadStatus {
+  AVAILABLE
+  CLAIMED
+  RETURNED_TO_POOL
+  LOST
+}
+
+/// Seção CNAE oficial derivada do CNAE principal.
+/// SOLAR, TECNOLOGIA e SERVICOS permanecem para compatibilidade com registros antigos.
+enum TenantSector {
+  SOLAR
+  TECNOLOGIA
+  CONSTRUCAO
+  SERVICOS
+  OUTROS
+  AGROPECUARIA
+  EXTRATIVISMO
+  INDUSTRIA
+  ENERGIA
+  AGUA_RESIDUOS
+  COMERCIO
+  TRANSPORTE_LOGISTICA
+  ALOJAMENTO_ALIMENTACAO
+  INFORMACAO_COMUNICACAO
+  FINANCAS_SEGUROS
+  IMOBILIARIO
+  PROFISSIONAL_CIENTIFICO
+  ADMINISTRATIVO
+  ADMINISTRACAO_PUBLICA
+  EDUCACAO
+  SAUDE_SOCIAL
+  ARTES_LAZER
+  SERVICOS_DOMESTICOS
+  ORGANISMOS_INTERNACIONAIS
+}
+
+/// Classificação fiscal oficial da Receita Federal.
+enum CompanySize {
+  ME
+  EPP
+  DEMAIS
+}
+
+/// Temperatura comercial do lead.
+enum LeadTemperature {
+  QUENTE
+  MORNO
+  FRIO
+}
+
+enum LeadTimelineNoteType {
+  NOTE
+  CALL
+  MEETING
+  STATUS_CHANGE
+}
+
+enum LeadSpecialDateType {
+  ANIVERSARIO_SOCIO
+  ANIVERSARIO_EMPRESA
+}
+
+model Tenant {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  tradeName    String?
+  cnpj         String?  @db.VarChar(14)
+  webhookToken String   @unique
+  maxUsers     Int      @default(10)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  users        User[]
+  stages       Stage[]
+  leads        TenantLead[]
+  contacts     LeadContact[]
+  specialDates LeadSpecialDate[]
+}
+
+model User {
+  id              String          @id @default(uuid()) @db.Uuid
+  tenantId        String          @db.Uuid
+  email           String
+  passwordHash    String
+  name            String
+  role            UserRole
+  operationalRole OperationalRole
+  status          UserStatus      @default(PENDING)
+  inviteToken     String?         @unique
+  inviteExpiresAt DateTime?
+  lastLoginAt     DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assignedLeads TenantLead[]       @relation("AssignedLeads")
+  createdLeads  TenantLead[]       @relation("CreatedLeads")
+  timelineNotes LeadTimelineNote[]
+
+  // `@@unique` já cria o índice de busca por (tenantId, email).
+  @@unique([tenantId, email])
+}
+
+model Stage {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  name        String
+  code        String
+  position    Int
+  colorHex    String   @db.VarChar(7)
+  isLostStage Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  leads  TenantLead[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, position])
+}
+
+/// Identidade única do cliente — independente da corporação que o atende.
+/// O documento (CNPJ/CPF) identifica a pessoa/empresa de forma global, por isso é
+/// `@unique`: permite `upsert` atômico por documento ao cadastrar um lead.
+model Lead {
+  id               String           @id @default(uuid()) @db.Uuid
+  personType       PersonType
+  cnpj             String?          @unique @db.VarChar(14)
+  cpf              String?          @unique @db.VarChar(11)
+  companyName      String?
+  tradeName        String?
+  primaryCnae      String?
+  cnaeDescription  String?
+  capitalSocial    Decimal?         @db.Decimal(14, 2)
+  postalCode       String?          @db.VarChar(9)
+  street           String?
+  number           String?
+  complement       String?
+  neighborhood     String?
+  city             String?
+  state            String?          @db.VarChar(2)
+  sector           TenantSector     @default(OUTROS)
+  companySize      CompanySize?
+  temperature      LeadTemperature?
+  temperatureScore Int?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  contacts     LeadContact[]
+  specialDates LeadSpecialDate[]
+  tenantLeads  TenantLead[]
+}
+
+/// Oportunidade comercial: o lead dentro de uma corporação, com etapa e valor.
+model TenantLead {
+  id                String           @id @default(uuid()) @db.Uuid
+  tenantId          String           @db.Uuid
+  leadId            String           @db.Uuid
+  stageId           String           @db.Uuid
+  assignedUserId    String?          @db.Uuid
+  creatorUserId     String?          @db.Uuid
+  status            TenantLeadStatus @default(AVAILABLE)
+  ticketValue       Decimal?         @db.Decimal(14, 2)
+  closeProbability  Int?
+  expectedCloseDate DateTime?
+  proposalScope     String?
+  customSector      String?          @db.VarChar(100)
+  lossReasonCode    String?
+  lossReasonNotes   String?
+  /// Controle de concorrência otimista: incrementa a cada escrita.
+  version           Int              @default(1)
+  lastContactAt     DateTime?
+  /// Marca quando o lead foi assumido do Pool. É a base da cota diária de
+  /// captação e **não** é zerado ao devolver o lead ao Pool.
+  claimedAt         DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lead          Lead               @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  stage         Stage              @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  assignedUser  User?              @relation("AssignedLeads", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  creatorUser   User?              @relation("CreatedLeads", fields: [creatorUserId], references: [id], onDelete: SetNull)
+  timelineNotes LeadTimelineNote[]
+
+  @@unique([tenantId, leadId])
+  @@index([tenantId, status])
+  @@index([tenantId, customSector])
+  @@index([assignedUserId])
+  @@index([assignedUserId, claimedAt])
+}
+
+/// Contato do cliente. Escopado por tenant: o mesmo `Lead` pode existir em várias
+/// corporações e cada uma só enxerga os próprios contatos.
+model LeadContact {
+  id              String    @id @default(uuid()) @db.Uuid
+  tenantId        String    @db.Uuid
+  leadId          String    @db.Uuid
+  name            String
+  role            String?
+  phone           String?
+  email           String?
+  birthday        DateTime?
+  isPrimary       Boolean   @default(false)
+  isDecisionMaker Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@index([tenantId, leadId])
+}
+
+/// Data especial do cliente (aniversário). Escopada por tenant pelo mesmo motivo
+/// dos contatos: é dado pessoal e não cruza corporações.
+model LeadSpecialDate {
+  id          String              @id @default(uuid()) @db.Uuid
+  tenantId    String              @db.Uuid
+  leadId      String              @db.Uuid
+  dateType    LeadSpecialDateType
+  /// Data no formato "DD/MM" — a parte do ano varia todo ano.
+  dayMonth    String              @db.VarChar(5)
+  description String?
+  createdAt   DateTime            @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lead   Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@index([tenantId, leadId])
+}
+
+model LeadTimelineNote {
+  id           String               @id @default(uuid()) @db.Uuid
+  tenantLeadId String               @db.Uuid
+  userId       String               @db.Uuid
+  type         LeadTimelineNoteType @default(NOTE)
+  title        String
+  content      String?
+  createdAt    DateTime             @default(now())
+
+  tenantLead TenantLead @relation(fields: [tenantLeadId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantLeadId, createdAt])
+}
