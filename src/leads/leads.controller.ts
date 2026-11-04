@@ -51,6 +51,10 @@ export class LeadsController {
     status: 400,
     description: 'Corpo inválido (documento ausente ou malformado).',
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Captadores não podem atribuir captações à própria carteira.',
+  })
   @ApiResponse({ status: 401, description: 'Sessão ausente ou expirada.' })
   @ApiResponse({
     status: 409,
@@ -65,7 +69,12 @@ export class LeadsController {
     @CurrentTenant() tenantId: string,
     @CurrentUser() user: AuthUser,
   ): Promise<TenantLeadResponse> {
-    return this.leads.createManual(dto, tenantId, user.userId);
+    return this.leads.createManual(
+      dto,
+      tenantId,
+      user.userId,
+      user.operationalRole,
+    );
   }
 
   @Get('pool')

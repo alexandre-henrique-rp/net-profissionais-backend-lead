@@ -57,18 +57,76 @@ $ yarn run test:e2e
 $ yarn run test:cov
 ```
 
-## Deployment
+## Docker deployment (blue-green)
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+The API runs in two internal Docker slots (`api-blue` and `api-green`). Nginx
+is the only service that publishes host port `3000`. The deploy CLI builds and
+starts the inactive slot, waits for its `/api/v1/health` healthcheck, validates
+and reloads Nginx, verifies the public health URL, and only then drains and
+stops the previous slot. A failed build or candidate healthcheck leaves the
+currently routed slot running.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+PostgreSQL and Redis remain external services; this Compose file does not create
+or reset either database. Prepare a production environment file on the server:
 
 ```bash
-$ yarn install -g @nestjs/mau
-$ mau deploy
+cp .env.example .env.prod
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Edit `.env.prod` with production values before deploying. At minimum, configure
+reachable `DATABASE_URL`, `REDIS_URL`, and a persistent `JWT_SECRET`. Database
+and Redis hostnames must be reachable **from a Docker container**; `localhost`
+inside `.env.prod` means the API container itself. Set `CORS_ORIGIN` to the
+frontend's public origin. Never commit `.env.prod` or copy it into the image:
+Compose injects it at runtime, and `.gitignore`/`.dockerignore` exclude it.
+
+On the server, clone this repository, configure `.env.prod`, ensure host port
+`3000` is free for the first installation, and run:
+
+```bash
+chmod +x deploy.sh
+./deploy.sh
+```
+
+The menu offers **Atualizar**, **Reverter** and **Sair**. You can also invoke
+the actions directly:
+
+```bash
+./deploy.sh atualizar
+./deploy.sh reverter
+```
+
+Updating uses `git pull --ff-only`, builds a release-tagged image, starts the
+inactive slot, and swaps traffic only after health and proxy checks pass. The
+previous slot's container is retained stopped for one rollback. Cleanup removes
+only old `net-profissionais-backend-lead` images that no container references;
+it does not run a global Docker prune. The host exposes the API at
+`http://localhost:3000/api/v1`.
+
+Check status and logs with:
+
+```bash
+docker compose --project-name net-profissionais-backend-lead ps
+docker compose --project-name net-profissionais-backend-lead logs -f api-blue
+docker compose --project-name net-profissionais-backend-lead logs -f api-green
+```
+
+### Database migrations
+
+The regular deploy deliberately does **not** modify the database. Review a
+migration for compatibility with both the currently active and candidate API,
+take a database backup according to your operations policy, then explicitly
+run:
+
+```bash
+RELEASE_TAG="$(git rev-parse --short=12 HEAD)" \
+  docker compose --project-name net-profissionais-backend-lead \
+  --profile migration run --rm api-migrate
+```
+
+For zero-downtime releases, use expand-and-contract migrations: first add
+backward-compatible schema, deploy code that can use it, and defer destructive
+column/type removal until no running release depends on the old schema.
 
 ## Observability
 

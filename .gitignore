@@ -43,6 +43,9 @@ lerna-debug.log*
 .env.*
 !.env.example
 
+# Estado local do deploy e configuração ativa do upstream Nginx
+.deploy/
+
 # temp directory
 .temp
 .tmp

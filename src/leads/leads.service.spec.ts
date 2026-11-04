@@ -510,6 +510,7 @@ describe('LeadsService', () => {
         manualDto({ assign_to_me: true }),
         TENANT_ID,
         USER_ID,
+        'VENDEDOR',
       );
 
       expect(tx.tenantLead.create.mock.calls[0][0].data).toMatchObject({
@@ -518,6 +519,23 @@ describe('LeadsService', () => {
       });
       expect(created.status).toBe('CLAIMED');
       expect(created.assignedUserId).toBe(USER_ID);
+    });
+
+    it('recusa autoatribuição de Captador com 403 sem gravar dados @spec:AC-218', async () => {
+      await expectBusinessError(
+        service.createManual(
+          manualDto({ assign_to_me: true }),
+          TENANT_ID,
+          captorUser.userId,
+          'CAPTADOR',
+        ),
+        403,
+        'FORBIDDEN',
+      );
+
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(tx.lead.upsert).not.toHaveBeenCalled();
+      expect(tx.tenantLead.create).not.toHaveBeenCalled();
     });
 
     it('devolve o ticket como number na resposta', async () => {

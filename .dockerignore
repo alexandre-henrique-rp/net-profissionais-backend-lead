@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+!.env.example
+node_modules
+dist
+coverage
+src/generated/prisma
+.vitest-results.json
+*.log
+.deploy

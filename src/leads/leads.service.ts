@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import type { AuthUser } from '../common/auth/auth.types.js';
+import type {
+  AuthOperationalRole,
+  AuthUser,
+} from '../common/auth/auth.types.js';
 import { BusinessException } from '../common/errors/business.exception.js';
 import {
   buildPageMeta,
@@ -223,7 +226,16 @@ export class LeadsService {
     dto: CreateManualLeadDto,
     tenantId: string,
     userId: string,
+    operationalRole: AuthOperationalRole = 'CAPTADOR',
   ): Promise<TenantLeadResponse> {
+    if (dto.assign_to_me === true && operationalRole === 'CAPTADOR') {
+      throw new BusinessException(
+        403,
+        'FORBIDDEN',
+        'Captadores não podem atribuir leads à própria carteira.',
+      );
+    }
+
     const cnpj = dto.person_type === 'PJ' ? normalizeDocument(dto.cnpj) : null;
     const cpf = dto.person_type === 'PF' ? normalizeDocument(dto.cpf) : null;
 
