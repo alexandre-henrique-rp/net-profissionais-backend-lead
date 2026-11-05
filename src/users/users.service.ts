@@ -54,6 +54,14 @@ export interface InviteResult {
   message: string;
 }
 
+/** Resposta do reenvio de convite (colaborador pendente). */
+export interface ResendInviteResult {
+  resent: true;
+  email: string;
+  expires_at: string;
+  message: string;
+}
+
 /** Resposta do bloqueio destrutivo (Modal 02). */
 export interface BlockResult {
   blocked: true;
@@ -385,12 +393,73 @@ export class UsersService {
     };
   }
 
+  /**
+   * `POST /users/{id}/resend-invite` — reenvia o convite de ativação.
+   *
+   * Só conta PENDING aceita reenvio: uma conta ativa já tem senha (o link
+   * antigo deixaria de servir para qualquer coisa) e uma bloqueada não deve
+   * receber acesso. O token anterior é sobrescrito, o que invalida o link
+   * antigo — o mais recente sempre é o único válido.
+   */
+  async resendInvite(
+    userId: string,
+    tenantId: string,
+  ): Promise<ResendInviteResult> {
+    const target = await this.findTarget(userId, tenantId);
+
+    if (target.status !== 'PENDING') {
+      throw new BusinessException(
+        409,
+        'USER_NOT_PENDING',
+        'O convite só pode ser reenviado para colaborador que ainda não criou a senha.',
+      );
+    }
+
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { name: true },
+    });
+
+    const inviteToken = randomUUID();
+    const inviteExpiresAt = new Date(
+      Date.now() + INVITE_TTL_HOURS * 60 * 60 * 1000,
+    );
+
+    await this.prisma.user.update({
+      where: { id: target.id },
+      data: { inviteToken, inviteExpiresAt },
+    });
+
+    try {
+      await this.mail.sendInvite(
+        target.email,
+        target.name,
+        inviteToken,
+        tenant?.name ?? 'NetProfissionais',
+      );
+    } catch (error) {
+      // O novo token já está no banco; falha de SMTP vira aviso, não 500.
+      this.logger.warn(
+        `Falha ao reenviar o convite para ${target.email}: ${(error as Error).message}`,
+      );
+    }
+
+    return {
+      resent: true,
+      email: target.email,
+      expires_at: inviteExpiresAt.toISOString(),
+      message: 'Convite reenviado com sucesso para o e-mail cadastrado.',
+    };
+  }
+
   /** Busca o alvo dentro do tenant; fora dele (ou id malformado) é 404. */
   private async findTarget(
     id: string,
     tenantId: string,
   ): Promise<{
     id: string;
+    name: string;
+    email: string;
     role: User['role'];
     operationalRole: User['operationalRole'];
     status: User['status'];
@@ -409,6 +478,8 @@ export class UsersService {
       where: { id, tenantId },
       select: {
         id: true,
+        name: true,
+        email: true,
         role: true,
         operationalRole: true,
         status: true,

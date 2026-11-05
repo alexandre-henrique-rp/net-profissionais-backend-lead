@@ -315,6 +315,97 @@ describe('UsersService', () => {
     });
   });
 
+  describe('resendInvite', () => {
+    const pendingTarget = {
+      id: TARGET_ID,
+      name: 'Roberto Vendas',
+      email: 'roberto.vendas@eletrominas.com.br',
+      role: 'USUARIO',
+      operationalRole: 'VENDEDOR',
+      status: 'PENDING',
+      passwordHash: '',
+    };
+
+    it('gera novo token, renova a expiração e reenvia o e-mail para PENDING @spec:AC-219', async () => {
+      const antes = Date.now();
+      prisma.user.findFirst.mockResolvedValue(pendingTarget);
+      prisma.tenant.findUnique.mockResolvedValue({ name: 'Eletrominas' });
+
+      const result = await service.resendInvite(TARGET_ID, TENANT_ID);
+
+      const updateData = prisma.user.update.mock.calls[0][0].data;
+      expect(updateData.inviteToken).toBeTruthy();
+      expect(
+        updateData.inviteExpiresAt.getTime() - antes,
+      ).toBeGreaterThanOrEqual(INVITE_TTL_HOURS * 60 * 60 * 1000 - 1000);
+      expect(mail.sendInvite).toHaveBeenCalledWith(
+        pendingTarget.email,
+        pendingTarget.name,
+        updateData.inviteToken,
+        'Eletrominas',
+      );
+      expect(result.resent).toBe(true);
+      expect(result.expires_at).toBe(updateData.inviteExpiresAt.toISOString());
+    });
+
+    it('responde 409 USER_NOT_PENDING quando a conta já está ativa @spec:AC-220', async () => {
+      prisma.user.findFirst.mockResolvedValue({
+        ...pendingTarget,
+        status: 'ACTIVE',
+        passwordHash: 'hash',
+      });
+
+      const error = await catchBusinessError(
+        service.resendInvite(TARGET_ID, TENANT_ID),
+      );
+
+      expect(error.getStatus()).toBe(409);
+      expect(error.code).toBe('USER_NOT_PENDING');
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(mail.sendInvite).not.toHaveBeenCalled();
+    });
+
+    it('responde 409 USER_NOT_PENDING para conta bloqueada @spec:AC-220', async () => {
+      prisma.user.findFirst.mockResolvedValue({
+        ...pendingTarget,
+        status: 'BLOCKED',
+      });
+
+      const error = await catchBusinessError(
+        service.resendInvite(TARGET_ID, TENANT_ID),
+      );
+
+      expect(error.getStatus()).toBe(409);
+      expect(mail.sendInvite).not.toHaveBeenCalled();
+    });
+
+    it('responde 404 para colaborador fora do tenant ou id inválido @spec:AC-220', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      const error = await catchBusinessError(
+        service.resendInvite(TARGET_ID, TENANT_ID),
+      );
+      expect(error.getStatus()).toBe(404);
+      expect(error.code).toBe('USER_NOT_FOUND');
+
+      const invalidId = await catchBusinessError(
+        service.resendInvite('nao-e-uuid', TENANT_ID),
+      );
+      expect(invalidId.getStatus()).toBe(404);
+    });
+
+    it('mantém o reenvio mesmo quando o SMTP falha @spec:AC-219', async () => {
+      prisma.user.findFirst.mockResolvedValue(pendingTarget);
+      prisma.tenant.findUnique.mockResolvedValue({ name: 'Eletrominas' });
+      mail.sendInvite.mockRejectedValue(new Error('SMTP fora do ar'));
+
+      const result = await service.resendInvite(TARGET_ID, TENANT_ID);
+
+      expect(result.resent).toBe(true);
+      expect(prisma.user.update).toHaveBeenCalled();
+    });
+  });
+
   describe('update', () => {
     it('responde 404 USER_NOT_FOUND para colaborador de outro tenant', async () => {
       prisma.user.findFirst.mockResolvedValue(null);

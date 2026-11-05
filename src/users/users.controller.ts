@@ -66,6 +66,19 @@ export class UsersController {
     return this.users.invite(dto, tenantId);
   }
 
+  @Post(':id/resend-invite')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Reenvia o convite para um colaborador pendente' })
+  @ApiResponse({ status: 200, description: 'Convite reenviado com novo token.' })
+  @ApiResponse({ status: 404, description: 'Colaborador fora da corporação.' })
+  @ApiResponse({ status: 409, description: 'Colaborador não está pendente.' })
+  resendInvite(
+    @Param('id') id: string,
+    @CurrentTenant() tenantId: string,
+  ) {
+    return this.users.resendInvite(id, tenantId);
+  }
+
   @Patch(':id')
   @ApiOperation({ summary: 'Edita nome, papéis e situação (Modal 03)' })
   @ApiResponse({ status: 200, description: 'Colaborador atualizado.' })
