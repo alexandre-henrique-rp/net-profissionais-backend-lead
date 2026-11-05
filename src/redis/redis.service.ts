@@ -46,11 +46,15 @@ export interface RedisLike {
  *
  * `lazyConnect` deixa a conexão para o primeiro comando: o processo sobe
  * mesmo com o Redis fora do ar, e o erro aparece na hora de usar.
+ *
+ * `enableOfflineQueue` fica ligado: numa queda momentânea da conexão os
+ * comandos esperam a reconexão (limitada por `maxRetriesPerRequest`) em
+ * vez de estourar "Stream isn't writeable" na cara do usuário.
  */
 export function createRedisClient(): Redis {
   const client = new Redis(env().REDIS_URL, {
     lazyConnect: true,
-    enableOfflineQueue: false,
+    enableOfflineQueue: true,
     maxRetriesPerRequest: 2,
   });
 
