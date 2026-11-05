@@ -154,8 +154,8 @@ confirm_nginx_reload() {
 	if [[ ! -t 0 ]]; then
 		return 1
 	fi
-	read -r -p "Nginx do servidor já recarregado e a API respondendo? [s/N] " resposta
-	[[ "$resposta" =~ ^[sS]$ ]]
+	read -r -p "Nginx do servidor já recarregado e a API respondendo? [S/n] " resposta
+	[[ ! "$resposta" =~ ^[nN]$ ]]
 }
 
 cleanup_project_images() {
@@ -197,6 +197,9 @@ deploy_update() {
 	fi
 
 	candidate_service="api-$candidate"
+	if [[ -n "$(container_id "$candidate_service")" ]]; then
+		echo "AVISO: api-$candidate já está rodando (fallback de uma troca pendente); será recriada."
+	fi
 	old_service=""
 	if [[ -n "$old_slot" ]]; then
 		old_service="api-$old_slot"
