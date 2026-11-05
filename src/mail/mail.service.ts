@@ -138,7 +138,13 @@ export class MailService {
       return;
     }
 
-    await this.transporter.sendMail({ from: this.from, ...message });
+    const info = await this.transporter.sendMail({
+      from: this.from,
+      ...message,
+    });
+    this.logger.log(
+      `E-mail "${message.subject}" enviado para ${message.to} (id ${info.messageId})`,
+    );
   }
 
   /**
