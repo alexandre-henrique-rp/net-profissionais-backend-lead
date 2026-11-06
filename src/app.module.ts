@@ -13,6 +13,7 @@ import { PipelineModule } from './pipeline/pipeline.module.js';
 import { ExportModule } from './export/export.module.js';
 import { LeadDetailModule } from './lead-detail/lead-detail.module.js';
 import { WebhookModule } from './webhook/webhook.module.js';
+import { CapturaLpModule } from './captura-lp/captura-lp.module.js';
 import { DashboardModule } from './dashboard/dashboard.module.js';
 import { MailModule } from './mail/mail.module.js';
 import { JwtAuthGuard } from './common/auth/jwt-auth.guard.js';
@@ -55,6 +56,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     LeadDetailModule,
 
     WebhookModule,
+    CapturaLpModule,
     DashboardModule,
   ],
   controllers: [HealthController],

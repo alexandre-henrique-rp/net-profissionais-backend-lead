@@ -62,6 +62,26 @@ export class EnvironmentVariables {
   @IsString()
   SEED_TENANT_WEBHOOK_TOKEN?: string;
 
+  /**
+   * Segredo da assinatura HMAC do webhook de captura.
+   *
+   * Opcional porque a API não pode depender da integração da landing page
+   * para subir: sem ele, apenas a rota de captura recusa.
+   */
+  @IsOptional()
+  @IsString()
+  WEBHOOK_TOKEN?: string;
+
+  /** Corporação (UUID) que recebe os leads da landing page. */
+  @IsOptional()
+  @IsString()
+  WEBHOOK_TENANT_ID?: string;
+
+  /** Base da API do webhook — padrão: a própria API, local. */
+  @IsOptional()
+  @IsString()
+  WEBHOOK_API_BASE?: string;
+
   /** Segredo de assinatura do JWT. Opcional em dev/teste; obrigatório em produção. */
   @IsOptional()
   @IsString()
@@ -111,6 +131,9 @@ export interface AppEnv {
   OBSERVE_APP_SECRET?: string;
   SEED_ADMIN_PASSWORD?: string;
   SEED_TENANT_WEBHOOK_TOKEN?: string;
+  WEBHOOK_TOKEN?: string;
+  WEBHOOK_TENANT_ID?: string;
+  WEBHOOK_API_BASE?: string;
   JWT_SECRET: string;
   JWT_EXPIRES_IN?: string;
   MAIL_FROM?: string;
@@ -220,6 +243,9 @@ export function validateEnv(
     OBSERVE_APP_SECRET: parsed.OBSERVE_APP_SECRET,
     SEED_ADMIN_PASSWORD: parsed.SEED_ADMIN_PASSWORD,
     SEED_TENANT_WEBHOOK_TOKEN: parsed.SEED_TENANT_WEBHOOK_TOKEN,
+    WEBHOOK_TOKEN: parsed.WEBHOOK_TOKEN,
+    WEBHOOK_TENANT_ID: parsed.WEBHOOK_TENANT_ID,
+    WEBHOOK_API_BASE: parsed.WEBHOOK_API_BASE,
     JWT_SECRET: resolveJwtSecret(parsed.JWT_SECRET, nodeEnv),
     JWT_EXPIRES_IN: parsed.JWT_EXPIRES_IN ?? DEFAULT_JWT_EXPIRES_IN,
     MAIL_FROM: parsed.MAIL_FROM ?? DEFAULT_MAIL_FROM,
