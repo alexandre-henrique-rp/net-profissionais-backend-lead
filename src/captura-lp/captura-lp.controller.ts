@@ -12,7 +12,12 @@ import { randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { Public } from '../common/auth/public.decorator.js';
 import { BusinessException } from '../common/errors/business.exception.js';
-import type { WebhookLeadPayloadDto } from '../webhook/dto/webhook-payload.dto.js';
+// Import **de valor** (não `import type`): com `emitDecoratorMetadata`, o
+// TypeScript apaga a importação de tipo e o metatype do `@Body()` vira
+// `Object` — aí o `whitelist` global descarta o corpo inteiro e o lead
+// chega sem consentimento. É o que aconteceu na primeira versão deste
+// controller; o teste `body-dto.spec.ts` vigia o padrão.
+import { WebhookLeadPayloadDto } from '../webhook/dto/webhook-payload.dto.js';
 import { LimiteDeOrigemService } from './limite-origem.service.js';
 import { WebhookRelayService } from './webhook-relay.service.js';
 
