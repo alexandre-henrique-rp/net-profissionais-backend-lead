@@ -101,11 +101,11 @@ wait_for_http() {
 }
 
 current_release() {
-	sed -n '1p' "$RELEASES_FILE" 2>/dev/null
+	sed -n '1p' "$RELEASES_FILE" 2>/dev/null || true
 }
 
 previous_release() {
-	sed -n '2p' "$RELEASES_FILE" 2>/dev/null
+	sed -n '2p' "$RELEASES_FILE" 2>/dev/null || true
 }
 
 write_releases() {
