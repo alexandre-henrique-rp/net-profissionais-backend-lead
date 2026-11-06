@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Atualização blue-green da API sem proxy interno.
+# Deploy da API em container único na porta 3000.
 #
-# Cada slot publica uma porta no host (blue=3000, green=3002).
-# A troca de tráfego reescreve .deploy/upstream.conf — arquivo que o Nginx
-# DO SERVIDOR inclui (ver deploy/nginx-site.example.conf). O reload do Nginx
-# é MANUAL: o script pergunta se você já recarregou antes de parar o slot
-# antigo; sem confirmação, o slot antigo segue rodando como fallback.
+# O tráfego público chega pelo Cloudflare Tunnel, que encaminha direto para
+# a porta 3000 do host — não existe proxy interno nem slot alternado para
+# trocar. Cada atualização recria o serviço `api` (a API fica alguns
+# segundos fora enquanto o container novo sobe e passa no healthcheck).
+#
+# Rollback: toda release fica tagueada como
+# net-profissionais-backend-lead:<sha do commit> e o registro das duas
+# últimas fica em .deploy/releases (linha 1 = atual, linha 2 = anterior).
+# `reverter` sobe a tag anterior SEM rebuild; se a nova release falha no
+# healthcheck, o deploy tenta voltar a anterior sozinho.
 #
 # Variáveis opcionais:
-#   DRAIN_SECONDS    → espera antes de parar o slot antigo (padrão: 10)
-#   HEALTH_TIMEOUT   → espera máxima pela candidata saudável (padrão: 120)
+#   HEALTH_TIMEOUT   → espera máxima pelo healthcheck (padrão: 120)
 
 set -Eeuo pipefail
 
@@ -17,9 +21,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 PROJECT="net-profissionais-backend-lead"
+IMAGE="net-profissionais-backend-lead"
+SERVICE="api"
 DEPLOY_DIR="$ROOT/.deploy"
-UPSTREAM_FILE="$DEPLOY_DIR/upstream.conf"
-DRAIN_SECONDS="${DRAIN_SECONDS:-10}"
+RELEASES_FILE="$DEPLOY_DIR/releases"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
 RELEASE_TAG=""
 
@@ -38,7 +43,7 @@ compose() {
 
 require_tools() {
 	command -v curl >/dev/null 2>&1 || {
-		echo "ERRO: curl é necessário para validar a saúde dos slots." >&2
+		echo "ERRO: curl é necessário para validar a saúde da API." >&2
 		return 1
 	}
 	[[ -f "$ROOT/.env.prod" ]] || {
@@ -47,43 +52,17 @@ require_tools() {
 	}
 }
 
-slot_port() {
-	case "$1" in
-		blue) echo 3000 ;;
-		green) echo 3002 ;;
-		*) return 1 ;;
-	esac
-}
-
-current_slot() {
-	if [[ -f "$UPSTREAM_FILE" ]]; then
-		case "$(sed -nE 's/^[[:space:]]*server 127\.0\.0\.1:([0-9]+);.*/\1/p' "$UPSTREAM_FILE" | head -n 1)" in
-			3000) echo blue ;;
-			3002) echo green ;;
-		esac
-	fi
-}
-
-write_upstream() {
-	local slot="$1" port tmp
-	port="$(slot_port "$slot")"
-	tmp="$UPSTREAM_FILE.tmp"
-	printf 'upstream netprofissional_api {\n\tserver 127.0.0.1:%s;\n}\n' "$port" >"$tmp"
-	mv "$tmp" "$UPSTREAM_FILE"
-}
-
 container_id() {
-	compose ps --all --quiet "$1" 2>/dev/null | head -n 1
+	compose ps --all --quiet "$SERVICE" 2>/dev/null | head -n 1
 }
 
 wait_for_health() {
-	local service="$1"
-	local timeout="$2"
+	local timeout="${1:-$HEALTH_TIMEOUT}"
 	local elapsed=0
 	local id state health
 
 	while ((elapsed < timeout)); do
-		id="$(container_id "$service")"
+		id="$(container_id)"
 		if [[ -n "$id" ]]; then
 			state="$(docker inspect --format '{{.State.Status}}' "$id" 2>/dev/null || true)"
 			health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$id" 2>/dev/null || true)"
@@ -91,8 +70,8 @@ wait_for_health() {
 				return 0
 			fi
 			if [[ "$state" == "exited" || "$state" == "dead" || "$health" == "unhealthy" ]]; then
-				echo "ERRO: $service não ficou saudável. Últimos logs:"
-				compose logs --tail=60 "$service" || true
+				echo "ERRO: $SERVICE não ficou saudável. Últimos logs:"
+				compose logs --tail=60 "$SERVICE" || true
 				return 1
 			fi
 		fi
@@ -100,18 +79,19 @@ wait_for_health() {
 		elapsed=$((elapsed + 2))
 	done
 
-	echo "ERRO: timeout aguardando healthcheck de $service."
-	compose logs --tail=60 "$service" || true
+	echo "ERRO: timeout aguardando healthcheck de $SERVICE."
+	compose logs --tail=60 "$SERVICE" || true
 	return 1
 }
 
+# A porta publicada é o que o Cloudflare Tunnel usa: valida o caminho real
+# host → container, não só o healthcheck interno do Docker.
 wait_for_http() {
-	local port="$1"
-	local timeout="${2:-30}"
+	local timeout="${1:-30}"
 	local elapsed=0
 	while ((elapsed < timeout)); do
 		if curl --fail --silent --show-error --max-time 2 \
-			"http://127.0.0.1:${port}/api/v1/health" >/dev/null 2>&1; then
+			"http://127.0.0.1:3000/api/v1/health" >/dev/null 2>&1; then
 			return 0
 		fi
 		sleep 2
@@ -120,49 +100,40 @@ wait_for_http() {
 	return 1
 }
 
-# Troca o tráfego para o slot: escreve o upstream, valida a candidata na
-# própria porta e informa o reload manual do Nginx do servidor.
-# Retorno: 0 = upstream apontado e candidata respondendo · 1 = falhou
-switch_traffic() {
-	local target="$1" port previous_config="" had_previous=0
-	port="$(slot_port "$target")"
-
-	if [[ -f "$UPSTREAM_FILE" ]]; then
-		previous_config="$(cat "$UPSTREAM_FILE")"
-		had_previous=1
-	fi
-
-	write_upstream "$target"
-
-	if ! wait_for_http "$port"; then
-		echo "ERRO: api-$target não responde em 127.0.0.1:$port; restaurando o upstream anterior."
-		if ((had_previous)); then
-			printf '%s\n' "$previous_config" >"$UPSTREAM_FILE"
-		fi
-		return 1
-	fi
-
-	echo "Upstream apontado para api-$target (127.0.0.1:$port) em $UPSTREAM_FILE."
-	echo ">>> Recarregue o Nginx do servidor: sudo nginx -t && sudo systemctl reload nginx"
-	return 0
+current_release() {
+	sed -n '1p' "$RELEASES_FILE" 2>/dev/null
 }
 
-# Pede confirmação de que o Nginx do servidor já foi recarregado.
-# Retorno: 0 = confirmado · 1 = pendente (ou sem TTY)
-confirm_nginx_reload() {
-	local resposta
-	if [[ ! -t 0 ]]; then
-		return 1
-	fi
-	read -r -p "Nginx do servidor já recarregado e a API respondendo? [S/n] " resposta
-	[[ ! "$resposta" =~ ^[nN]$ ]]
+previous_release() {
+	sed -n '2p' "$RELEASES_FILE" 2>/dev/null
+}
+
+write_releases() {
+	mkdir -p "$DEPLOY_DIR"
+	printf '%s\n%s\n' "$1" "${2:-}" >"$RELEASES_FILE"
+}
+
+# Transição do antigo esquema blue-green: os containers api-blue/api-green
+# seguram a porta 3000 e precisam sair antes do serviço único subir.
+# Não faz nada quando eles já não existem — seguro para rodar em todo deploy.
+remove_legacy_slots() {
+	local legacy
+	for legacy in api-blue api-green; do
+		if docker rm -f "${PROJECT}-${legacy}-1" >/dev/null 2>&1; then
+			echo "Removido container legado ${PROJECT}-${legacy}-1."
+		fi
+	done
+	rm -f "$DEPLOY_DIR/upstream.conf" "$DEPLOY_DIR/active-slot"
 }
 
 cleanup_project_images() {
-	local ref image_id in_use
+	local ref image_id in_use previous_tag
+	previous_tag="$(previous_release)"
 	while IFS= read -r ref; do
 		[[ "$ref" == net-profissionais-backend-lead:* ]] || continue
 		[[ "$ref" == "net-profissionais-backend-lead:$RELEASE_TAG" ]] && continue
+		# A tag anterior fica para o rollback sem rebuild.
+		[[ "$ref" == "net-profissionais-backend-lead:$previous_tag" ]] && continue
 		image_id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
 		[[ -n "$image_id" ]] || continue
 		in_use="$(docker ps --all --quiet --filter "ancestor=$image_id")"
@@ -173,126 +144,83 @@ cleanup_project_images() {
 	done < <(docker image ls --format '{{.Repository}}:{{.Tag}}')
 }
 
+# --remove-orphans limpa restos de definições antigas do mesmo projeto.
+run_service() {
+	compose up -d --no-deps --force-recreate --remove-orphans "$SERVICE"
+}
+
 deploy_update() {
-	local old_slot candidate old_service candidate_service old_id
+	local previous_tag
 
 	require_tools
-	echo "== 1/6 · Atualizando código (fast-forward) =="
+	echo "== 1/5 · Atualizando código (fast-forward) =="
 	git pull --ff-only
 
 	RELEASE_TAG="$(git rev-parse --short=12 HEAD)"
 	export RELEASE_TAG
-	mkdir -p "$DEPLOY_DIR"
+	previous_tag="$(current_release)"
 
-	old_slot="$(current_slot)"
-	if [[ "$old_slot" == "blue" ]]; then
-		candidate="green"
-	elif [[ "$old_slot" == "green" ]]; then
-		candidate="blue"
-	elif [[ -z "$old_slot" ]]; then
-		candidate="blue"
-	else
-		echo "ERRO: upstream inválido em $UPSTREAM_FILE: $old_slot" >&2
+	echo "== 2/5 · Construindo imagem $RELEASE_TAG =="
+	compose build "$SERVICE"
+
+	echo "== 3/5 · Liberando a porta 3000 e recriando o container =="
+	remove_legacy_slots
+	if ! run_service; then
+		echo "ERRO: container não iniciou." >&2
 		return 1
 	fi
 
-	candidate_service="api-$candidate"
-	if [[ -n "$(container_id "$candidate_service")" ]]; then
-		echo "AVISO: api-$candidate já está rodando (fallback de uma troca pendente); será recriada."
-	fi
-	old_service=""
-	if [[ -n "$old_slot" ]]; then
-		old_service="api-$old_slot"
-		old_id="$(container_id "$old_service")"
-		if [[ -z "$old_id" ]] ||
-			[[ "$(docker inspect --format '{{.State.Running}}' "$old_id")" != "true" ]] ||
-			[[ "$(docker inspect --format '{{.State.Health.Status}}' "$old_id" 2>/dev/null || true)" != "healthy" ]]; then
-			echo "ERRO: o slot atual $old_service não está saudável; atualização cancelada." >&2
-			return 1
-		fi
-	fi
-
-	echo "== 2/6 · Construindo imagem $RELEASE_TAG =="
-	compose build "$candidate_service"
-
-	echo "== 3/6 · Iniciando candidata no slot $candidate (porta $(slot_port "$candidate")) =="
-	if ! compose up -d --no-deps --force-recreate "$candidate_service"; then
-		echo "ERRO: candidata não iniciou; o slot atual não foi alterado." >&2
-		return 1
-	fi
-	if ! wait_for_health "$candidate_service" "$HEALTH_TIMEOUT"; then
-		compose stop "$candidate_service" >/dev/null 2>&1 || true
-		echo "Slot atual preservado: ${old_service:-nenhum (primeira instalação)}."
-		return 1
-	fi
-
-	echo "== 4/6 · Apontando o upstream do Nginx do servidor =="
-	if ! switch_traffic "$candidate"; then
-		if [[ -n "$old_slot" ]]; then
-			compose stop "$candidate_service" >/dev/null 2>&1 || true
-			echo "Slot atual $old_service continua atendendo."
+	echo "== 4/5 · Aguardando healthcheck e resposta na porta 3000 =="
+	if ! wait_for_health "$HEALTH_TIMEOUT" || ! wait_for_http 30; then
+		if [[ -n "$previous_tag" ]] &&
+			docker image inspect "$IMAGE:$previous_tag" >/dev/null 2>&1; then
+			echo "Restaurando a release anterior ($previous_tag)..."
+			RELEASE_TAG="$previous_tag"
+			if run_service && wait_for_health "$HEALTH_TIMEOUT"; then
+				echo "Rollback automático concluído; API de volta na $previous_tag."
+			else
+				echo "ERRO: rollback automático também falhou — intervene manualmente." >&2
+			fi
 		fi
 		return 1
 	fi
 
-	echo "$candidate" >"$DEPLOY_DIR/active-slot"
-	if [[ -n "$old_service" ]] && ! confirm_nginx_reload; then
-		echo "== 5/6 · Troca pendente de confirmação no Nginx do servidor =="
-		echo "O slot antigo $old_service segue rodando como fallback."
-		echo "Depois de recarregar o Nginx, pare-o com: docker compose stop $old_service"
-	elif [[ -n "$old_service" ]]; then
-		echo "== 5/6 · Drenando conexões por ${DRAIN_SECONDS}s e parando $old_service =="
-		sleep "$DRAIN_SECONDS"
-		compose stop --timeout 30 "$old_service"
-	else
-		echo "== 5/6 · Primeira instalação; nenhum slot anterior para parar =="
-	fi
+	write_releases "$RELEASE_TAG" "$previous_tag"
 
-	echo "== 6/6 · Limpando apenas imagens antigas não utilizadas deste projeto =="
+	echo "== 5/5 · Limpando apenas imagens antigas não utilizadas deste projeto =="
 	cleanup_project_images
-	echo "✔ API no slot $candidate (porta $(slot_port "$candidate")); upstream em $UPSTREAM_FILE."
+	echo "✔ API atualizada para $RELEASE_TAG na porta 3000."
 }
 
 rollback() {
-	local active previous active_service previous_service previous_id
+	local previous_tag current_tag
+
 	require_tools
-	active="$(current_slot)"
-	case "$active" in
-		blue) previous="green" ;;
-		green) previous="blue" ;;
-		*)
-			echo "ERRO: não há slot ativo conhecido para reverter." >&2
-			return 1
-			;;
-	esac
-	active_service="api-$active"
-	previous_service="api-$previous"
-	previous_id="$(container_id "$previous_service")"
-	if [[ -z "$previous_id" ]]; then
-		echo "ERRO: não existe container anterior em $previous_service." >&2
+	previous_tag="$(previous_release)"
+	if [[ -z "$previous_tag" ]]; then
+		echo "ERRO: não há release anterior registrada em $RELEASES_FILE." >&2
+		return 1
+	fi
+	if ! docker image inspect "$IMAGE:$previous_tag" >/dev/null 2>&1; then
+		echo "ERRO: imagem $IMAGE:$previous_tag não existe mais localmente." >&2
 		return 1
 	fi
 
-	echo "Iniciando e validando o slot anterior $previous (porta $(slot_port "$previous"))..."
-	compose start "$previous_service"
-	if ! wait_for_health "$previous_service" "$HEALTH_TIMEOUT"; then
-		echo "Rollback cancelado; o slot atual $active continua atendendo."
+	current_tag="$(current_release)"
+	echo "Revertendo para $previous_tag (atual: ${current_tag:-desconhecida})..."
+	RELEASE_TAG="$previous_tag"
+	export RELEASE_TAG
+	if ! run_service; then
+		echo "ERRO: container não iniciou." >&2
 		return 1
 	fi
-	if ! switch_traffic "$previous"; then
-		echo "Rollback não confirmado; o slot atual $active continua atendendo."
+	if ! wait_for_health "$HEALTH_TIMEOUT" || ! wait_for_http 30; then
+		echo "ERRO: rollback não ficou saudável." >&2
 		return 1
 	fi
-	echo "$previous" >"$DEPLOY_DIR/active-slot"
-	if confirm_nginx_reload; then
-		sleep "$DRAIN_SECONDS"
-		compose stop --timeout 30 "$active_service"
-	else
-		echo "Troca pendente no Nginx do servidor; $active_service segue rodando como fallback."
-	fi
-	RELEASE_TAG="$(git rev-parse --short=12 HEAD)"
+	write_releases "$previous_tag" "$current_tag"
 	cleanup_project_images
-	echo "✔ Rollback concluído; slot ativo: $previous."
+	echo "✔ Rollback concluído; release ativa: $previous_tag."
 }
 
 menu() {
@@ -301,8 +229,8 @@ menu() {
 		echo "┌──────────────────────────────────────────────────┐"
 		echo "│   NetProfissional — Deploy da API                │"
 		echo "└──────────────────────────────────────────────────┘"
-		echo "  1) Atualizar (git pull → build → healthcheck → troca)"
-		echo "  2) Reverter para o slot anterior"
+		echo "  1) Atualizar (git pull → build → recreate → healthcheck)"
+		echo "  2) Reverter para a release anterior"
 		echo "  3) Sair"
 		echo
 		read -r -p "Escolha uma opção [1-3]: " option

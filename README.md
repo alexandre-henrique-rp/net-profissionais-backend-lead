@@ -57,29 +57,20 @@ $ yarn run test:e2e
 $ yarn run test:cov
 ```
 
-## Docker deployment (blue-green)
+## Docker deployment (single container)
 
-The API runs in two Docker slots (`api-blue` and `api-green`), each publishing
-a distinct published host port: blue on `3000` and green on
-`3002`. There is **no internal proxy container** — the Nginx already
-installed on the server does the reverse proxy.
+The API runs as a single Docker service (`api`) publishing host port `3000`.
+Public traffic arrives through the Cloudflare Tunnel (`cloudflared`), which
+forwards directly to `localhost:3000` — there is **no internal proxy and no
+slot switching**. Each update recreates the container, so the API is down
+for a few seconds while the new container boots and passes the healthcheck.
 
-The traffic switch works through an upstream file: `deploy.sh` rewrites
-`.deploy/upstream.conf` pointing to the healthy slot's port and prints the
-command to reload the host Nginx (`sudo nginx -t && sudo systemctl reload
-nginx`). The Nginx reload is **manual** — the script asks for confirmation
-before stopping the old slot; without it, the old slot keeps running as
-fallback until you reload Nginx and stop it with `docker compose stop
-api-<slot>`. A failed build or candidate healthcheck leaves the currently
-routed slot running.
-
-### Host Nginx setup (one-time)
-
-`deploy/nginx-site.example.conf` is a ready server block for the host Nginx.
-Copy it into `sites-available`/`conf.d`, adjust `server_name` and the
-**absolute path** of `include .../.deploy/upstream.conf`, enable the site and
-run `nginx -t && nginx -s reload`. Every later update only rewrites the
-included upstream file, so an `nginx` reload is all the switch needs.
+Rollback uses image tags: every release is tagged
+`net-profissionais-backend-lead:<commit sha>` and the last two releases are
+recorded in `.deploy/releases` (line 1 = current, line 2 = previous).
+`./deploy.sh reverter` starts the previous tag **without rebuilding**; if a
+new release fails the healthcheck or the port check, the update tries to
+restore the previous release automatically.
 
 PostgreSQL and Redis remain external services; this Compose file does not
 create or reset either database. Prepare a production environment file on the
@@ -111,19 +102,17 @@ the actions directly:
 ./deploy.sh reverter
 ```
 
-Updating uses `git pull --ff-only`, builds a release-tagged image, starts the
-inactive slot on its own port, and repoints the Nginx upstream only after the
-candidate healthcheck passes. The previous slot's container is retained
-stopped for one rollback. Cleanup removes only old
-`net-profissionais-backend-lead` images that no container references; it does
-not run a global Docker prune.
+Updating uses `git pull --ff-only`, builds a release-tagged image, recreates
+the `api` container and waits for the Docker healthcheck plus a real request
+on the published port before recording the release. Cleanup removes only old
+`net-profissionais-backend-lead` images that no container references — the
+current and previous release tags are kept so rollback never needs a rebuild.
 
 Check status and logs with:
 
 ```bash
 docker compose --project-name net-profissionais-backend-lead ps
-docker compose --project-name net-profissionais-backend-lead logs -f api-blue
-docker compose --project-name net-profissionais-backend-lead logs -f api-green
+docker compose --project-name net-profissionais-backend-lead logs -f api
 ```
 
 ### Database migrations

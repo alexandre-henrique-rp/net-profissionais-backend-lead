@@ -1,52 +1,44 @@
 name: net-profissionais-backend-lead
 
-x-api: &api
-  image: net-profissionais-backend-lead:${RELEASE_TAG:-local}
-  env_file:
-    - .env.prod
-  environment:
-    NODE_ENV: production
-    PORT: "3000"
-  expose:
-    - "3000"
-  # Permite que DATABASE_URL/REDIS_URL apontem para o host onde Postgres e
-  # Redis rodam como serviços do sistema: use host.docker.internal no .env.prod
-  extra_hosts:
-    - "host.docker.internal:host-gateway"
-  restart: unless-stopped
-  stop_grace_period: 40s
-  healthcheck:
-    test:
-      - CMD
-      - node
-      - -e
-      - "fetch('http://127.0.0.1:3000/api/v1/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
-    interval: 5s
-    timeout: 3s
-    start_period: 15s
-    retries: 12
-  networks:
-    - api
-
-# Sem proxy interno: o Nginx do servidor (host) faz o proxy reverso.
-# Cada slot publica uma porta distinta apenas em 127.0.0.1 e o deploy.sh
-# reescreve .deploy/upstream.conf apontando para o slot ativo.
+# Container único na porta 3000: o Cloudflare Tunnel encaminha o tráfego
+# público direto para a porta 3000 do host — não há proxy interno nem
+# alternância de slots. Cada deploy recria o serviço `api` (a API fica
+# alguns segundos fora enquanto o container novo sobe e passa no
+# healthcheck). O rollback sobe a imagem tagueada da release anterior,
+# sem rebuild — ver deploy.sh.
 services:
-  api-blue:
-    <<: *api
+  api:
+    image: net-profissionais-backend-lead:${RELEASE_TAG:-local}
     build:
       context: .
       target: runtime
+    env_file:
+      - .env.prod
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    expose:
+      - "3000"
+    # Permite que DATABASE_URL/REDIS_URL apontem para o host onde Postgres e
+    # Redis rodam como serviços do sistema: use host.docker.internal no .env.prod
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    stop_grace_period: 40s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/v1/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+      retries: 12
     ports:
       - "3000:3000"
-
-  api-green:
-    <<: *api
-    build:
-      context: .
-      target: runtime
-    ports:
-      - "3002:3000"
+    networks:
+      - api
 
   api-migrate:
     image: net-profissionais-backend-lead-migrate:${RELEASE_TAG:-local}
