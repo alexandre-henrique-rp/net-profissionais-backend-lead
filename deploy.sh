@@ -3,8 +3,9 @@
 #
 # O tráfego público chega pelo Cloudflare Tunnel, que encaminha direto para
 # a porta 3000 do host — não existe proxy interno nem slot alternado para
-# trocar. Cada atualização recria o serviço `api` (a API fica alguns
-# segundos fora enquanto o container novo sobe e passa no healthcheck).
+# trocar. Cada atualização constrói a imagem, aplica migrações Prisma pendentes
+# via serviço `api-migrate` (`prisma:deploy`) e recria o serviço `api` (a API
+# fica alguns segundos fora enquanto o container novo sobe e passa no healthcheck).
 #
 # Rollback: toda release fica tagueada como
 # net-profissionais-backend-lead:<sha do commit> e o registro das duas
@@ -130,8 +131,9 @@ cleanup_project_images() {
 	local ref image_id in_use previous_tag
 	previous_tag="$(previous_release)"
 	while IFS= read -r ref; do
-		[[ "$ref" == net-profissionais-backend-lead:* ]] || continue
+		[[ "$ref" == net-profissionais-backend-lead:* || "$ref" == net-profissionais-backend-lead-migrate:* ]] || continue
 		[[ "$ref" == "net-profissionais-backend-lead:$RELEASE_TAG" ]] && continue
+		[[ "$ref" == "net-profissionais-backend-lead-migrate:$RELEASE_TAG" ]] && continue
 		# A tag anterior fica para o rollback sem rebuild.
 		[[ "$ref" == "net-profissionais-backend-lead:$previous_tag" ]] && continue
 		image_id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
@@ -149,28 +151,50 @@ run_service() {
 	compose up -d --no-deps --force-recreate --remove-orphans "$SERVICE"
 }
 
+# Aplica migrações Prisma pendentes via serviço dedicado `api-migrate`
+# (`yarn prisma:deploy` — idempotente e não destrutivo).
+run_migrations() {
+	compose --profile migration build api-migrate
+	compose --profile migration run --rm api-migrate
+}
+
+migrate_only() {
+	require_tools
+	RELEASE_TAG="$(git rev-parse --short=12 HEAD)"
+	export RELEASE_TAG
+	echo "== Aplicando migrações pendentes (Prisma) =="
+	run_migrations
+	echo "✔ Migrações aplicadas."
+}
+
 deploy_update() {
 	local previous_tag
 
 	require_tools
-	echo "== 1/5 · Atualizando código (fast-forward) =="
+	echo "== 1/6 · Atualizando código (fast-forward) =="
 	git pull --ff-only
 
 	RELEASE_TAG="$(git rev-parse --short=12 HEAD)"
 	export RELEASE_TAG
 	previous_tag="$(current_release)"
 
-	echo "== 2/5 · Construindo imagem $RELEASE_TAG =="
+	echo "== 2/6 · Construindo imagem $RELEASE_TAG =="
 	compose build "$SERVICE"
 
-	echo "== 3/5 · Liberando a porta 3000 e recriando o container =="
+	echo "== 3/6 · Aplicando migrações pendentes (Prisma) =="
+	if ! run_migrations; then
+		echo "ERRO: falha ao aplicar migrações; container $SERVICE não foi recriado." >&2
+		return 1
+	fi
+
+	echo "== 4/6 · Liberando a porta 3000 e recriando o container =="
 	remove_legacy_slots
 	if ! run_service; then
 		echo "ERRO: container não iniciou." >&2
 		return 1
 	fi
 
-	echo "== 4/5 · Aguardando healthcheck e resposta na porta 3000 =="
+	echo "== 5/6 · Aguardando healthcheck e resposta na porta 3000 =="
 	if ! wait_for_health "$HEALTH_TIMEOUT" || ! wait_for_http 30; then
 		if [[ -n "$previous_tag" ]] &&
 			docker image inspect "$IMAGE:$previous_tag" >/dev/null 2>&1; then
@@ -187,7 +211,7 @@ deploy_update() {
 
 	write_releases "$RELEASE_TAG" "$previous_tag"
 
-	echo "== 5/5 · Limpando apenas imagens antigas não utilizadas deste projeto =="
+	echo "== 6/6 · Limpando apenas imagens antigas não utilizadas deste projeto =="
 	cleanup_project_images
 	echo "✔ API atualizada para $RELEASE_TAG na porta 3000."
 }
@@ -229,16 +253,18 @@ menu() {
 		echo "┌──────────────────────────────────────────────────┐"
 		echo "│   NetProfissional — Deploy da API                │"
 		echo "└──────────────────────────────────────────────────┘"
-		echo "  1) Atualizar (git pull → build → recreate → healthcheck)"
+		echo "  1) Atualizar (git pull → build → migrate → recreate → healthcheck)"
 		echo "  2) Reverter para a release anterior"
-		echo "  3) Sair"
+		echo "  3) Aplicar migrações pendentes (Prisma)"
+		echo "  4) Sair"
 		echo
-		read -r -p "Escolha uma opção [1-3]: " option
+		read -r -p "Escolha uma opção [1-4]: " option
 		case "$option" in
 			1 | atualizar | update) deploy_update ;;
 			2 | reverter | rollback) rollback ;;
-			3 | sair | exit | quit | q) echo "Saindo."; return 0 ;;
-			*) echo "Opção inválida — escolha 1, 2 ou 3." ;;
+			3 | migrar | migrate) migrate_only ;;
+			4 | sair | exit | quit | q) echo "Saindo."; return 0 ;;
+			*) echo "Opção inválida — escolha 1, 2, 3 ou 4." ;;
 		esac
 	done
 }
@@ -246,10 +272,11 @@ menu() {
 case "${1:-menu}" in
 	atualizar | update) deploy_update ;;
 	reverter | rollback) rollback ;;
+	migrar | migrate) migrate_only ;;
 	sair | exit | quit) echo "Saindo." ;;
 	menu | "") menu ;;
 	*)
-		echo "Uso: $0 [atualizar|reverter|sair]" >&2
+		echo "Uso: $0 [atualizar|reverter|migrar|sair]" >&2
 		exit 2
 		;;
 esac

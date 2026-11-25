@@ -15,6 +15,7 @@ import { LeadDetailModule } from './lead-detail/lead-detail.module.js';
 import { WebhookModule } from './webhook/webhook.module.js';
 import { CapturaLpModule } from './captura-lp/captura-lp.module.js';
 import { DashboardModule } from './dashboard/dashboard.module.js';
+import { AisaModule } from './integrations/aisa/aisa.module.js';
 import { MailModule } from './mail/mail.module.js';
 import { JwtAuthGuard } from './common/auth/jwt-auth.guard.js';
 import { RolesGuard } from './common/auth/roles.guard.js';
@@ -58,6 +59,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     WebhookModule,
     CapturaLpModule,
     DashboardModule,
+    AisaModule,
   ],
   controllers: [HealthController],
   providers: [

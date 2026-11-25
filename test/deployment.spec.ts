@@ -12,6 +12,10 @@ const updateFlow = deployScript.slice(
 	deployScript.indexOf('deploy_update()'),
 	deployScript.indexOf('\nrollback()'),
 );
+const migrateFlow = deployScript.slice(
+	deployScript.indexOf('run_migrations()'),
+	deployScript.indexOf('\ndeploy_update()'),
+);
 const rollbackFlow = deployScript.slice(
 	deployScript.indexOf('rollback()'),
 	deployScript.indexOf('\nmenu()'),
@@ -107,8 +111,23 @@ describe('deploy Docker em container único', () => {
 		expect(cleanup).not.toContain('docker image prune');
 	});
 
-	it('@spec:AC-217 o deploy padrão não aplica migrations automaticamente', () => {
-		expect(updateFlow).not.toContain('prisma:deploy');
+	it('@spec:AC-217 o deploy aplica migrations pendentes via api-migrate (prisma:deploy) antes de recriar a API', () => {
+		expect(migrateFlow).toContain(
+			'compose --profile migration build api-migrate',
+		);
+		expect(migrateFlow).toContain(
+			'compose --profile migration run --rm api-migrate',
+		);
+		expect(updateFlow).toContain('run_migrations');
+		expect(updateFlow.indexOf('run_migrations')).toBeLessThan(
+			updateFlow.indexOf('run_service'),
+		);
+		expect(dockerfile).toContain('FROM build AS migrate');
+		expect(dockerfile).toContain('CMD ["yarn", "prisma:deploy"]');
+		expect(dockerfile).not.toContain('migrate dev');
+		expect(dockerfile).not.toContain('db push');
+		expect(deployScript).not.toContain('migrate dev');
+		expect(deployScript).not.toContain('db push');
 		expect(compose).toContain('api-migrate:');
 		expect(compose).toContain('target: migrate');
 		expect(compose).toContain('profiles:');

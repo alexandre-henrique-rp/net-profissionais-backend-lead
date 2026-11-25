@@ -108,14 +108,20 @@ enum LeadSpecialDateType {
 }
 
 model Tenant {
-  id           String   @id @default(uuid()) @db.Uuid
-  name         String
-  tradeName    String?
-  cnpj         String?  @db.VarChar(14)
-  webhookToken String   @unique
-  maxUsers     Int      @default(10)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                   String   @id @default(uuid()) @db.Uuid
+  name                 String
+  tradeName            String?
+  cnpj                 String?  @db.VarChar(14)
+  webhookToken         String   @unique
+  maxUsers             Int      @default(10)
+  aisaApiKeyEncrypted  String?
+  aisaBaseUrl          String?
+  aiLlmProvider        String?  @db.VarChar(20)
+  aiLlmModel           String?  @db.VarChar(120)
+  aiLlmApiKeyEncrypted String?
+  aiLlmBaseUrl         String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   users        User[]
   stages       Stage[]

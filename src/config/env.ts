@@ -118,6 +118,11 @@ export class EnvironmentVariables {
   @IsOptional()
   @IsString()
   SMTP_PASS?: string;
+
+  /** Chave mestre opcional para cifrar segredos por tenant (fallback: JWT_SECRET). */
+  @IsOptional()
+  @IsString()
+  APP_ENCRYPTION_KEY?: string;
 }
 
 /** Configuração validada e tipada que a aplicação usa. */
@@ -142,6 +147,7 @@ export interface AppEnv {
   SMTP_PORT?: number;
   SMTP_USER?: string;
   SMTP_PASS?: string;
+  APP_ENCRYPTION_KEY?: string;
 }
 
 const DEFAULT_CORS_ORIGIN = 'http://localhost:5173';
@@ -254,6 +260,7 @@ export function validateEnv(
     SMTP_PORT: parsed.SMTP_PORT,
     SMTP_USER: parsed.SMTP_USER,
     SMTP_PASS: parsed.SMTP_PASS,
+    APP_ENCRYPTION_KEY: parsed.APP_ENCRYPTION_KEY,
   };
 
   return cached;
